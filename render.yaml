@@ -11,9 +11,10 @@ services:
       - key: ADMIN_CHAT_ID
         value: "1332202691"
       - key: WEBHOOK_URL
-        value: "https://yourdomain.com/telegram-webhook"
+        value: "https://my-telegrambot-d0gp.onrender.com"
       - key: PORT
         value: "8443"
+
 
 
 
