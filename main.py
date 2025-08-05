@@ -1,134 +1,169 @@
 import os
-import nest_asyncio
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
-    filters,
-    ConversationHandler,
-    ContextTypes,
+from dotenv import load_dotenv
+from telegram import (
+    Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardRemove,
 )
+from telegram.ext import (
+    Application, CommandHandler, CallbackQueryHandler,
+    MessageHandler, ConversationHandler, filters, ContextTypes,
+)
+import gspread
 
-nest_asyncio.apply()
+load_dotenv()
 
-# Стани діалогу
-LOCATION, BOOK, NAME, CONTACT, DURATION = range(5)
+# Константи
+CHOOSE_LOCATION, CHOOSE_GENRE, SHOW_BOOKS, SELECT_BOOK, CHOOSE_RENT_DAYS, GET_CONTACT = range(6)
 
-locations = ["Київ – ЛітКав’ярня", "Львів – BookCup"]
-books_catalog = {
-    "Київ – ЛітКав’ярня": ["1984 – Дж. Орвелл", "Місто – В. Підмогильний"],
-    "Львів – BookCup": ["Тигролови – Іван Багряний", "Фелікс Австрія – Софія Андрухович"],
+# Дані
+locations = ["Кав'ярня A", "Кав'ярня B"]
+genres = ["Фантастика", "Роман", "Історія", "Детектив"]
+books = {
+    "Фантастика": ["Дюна", "1984"],
+    "Роман": ["Анна Кареніна", "Гордість і упередження"],
+    "Історія": ["Історія України", "Європа ХХ ст."],
+    "Детектив": ["Шерлок Холмс", "Вбивство в «Східному експресі»"],
 }
+rental_days = [10, 14, 21, 30]
+books_per_page = 2
 
-TOKEN = os.getenv("TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_CHAT_ID"))
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-PORT = int(os.getenv("PORT", 8443))  # За замовчуванням 8443 або 8080, як хочеш
+# Google Sheets
+gc = gspread.service_account(filename='google_credentials.json')
+sh = gc.open("RentalBookBot")
+worksheet = sh.sheet1
 
+# Старт
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "👋 Вітаємо в боті оренди книжок!\n\nОберіть локацію:",
-        reply_markup=ReplyKeyboardMarkup([[loc] for loc in locations], one_time_keyboard=True, resize_keyboard=True),
-    )
-    return LOCATION
+    keyboard = [[InlineKeyboardButton(loc, callback_data=loc)] for loc in locations]
+    await update.message.reply_text("Оберіть локацію:", reply_markup=InlineKeyboardMarkup(keyboard))
+    return CHOOSE_LOCATION
 
-async def get_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["location"] = update.message.text
-    books = books_catalog.get(update.message.text, [])
-    await update.message.reply_text(
-        "Оберіть книгу:",
-        reply_markup=ReplyKeyboardMarkup([[b] for b in books], one_time_keyboard=True, resize_keyboard=True),
-    )
-    return BOOK
+# Вибір жанру
+async def choose_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data["location"] = query.data
 
-async def get_book(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["book"] = update.message.text
-    await update.message.reply_text("Як вас звати?")
-    return NAME
+    keyboard = [[InlineKeyboardButton(genre, callback_data=genre)] for genre in genres]
+    keyboard.append([InlineKeyboardButton("Показати всі книги", callback_data="all")])
+    await query.edit_message_text("Оберіть жанр або перегляньте всі книжки:",
+                                  reply_markup=InlineKeyboardMarkup(keyboard))
+    return CHOOSE_GENRE
 
-async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["name"] = update.message.text
+# Вибір книги за жанром або всі
+async def choose_genre(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data["genre"] = query.data
 
-    contact_button = ReplyKeyboardMarkup(
-        [[KeyboardButton(text="📱 Поділитись номером", request_contact=True)]],
-        one_time_keyboard=True,
-        resize_keyboard=True,
-    )
-
-    await update.message.reply_text(
-        "Будь ласка, натисніть кнопку, щоб поділитися своїм номером телефону:",
-        reply_markup=contact_button
-    )
-    return CONTACT
-
-async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.contact:
-        context.user_data["contact"] = update.message.contact.phone_number
+    all_books = []
+    if query.data == "all":
+        for book_list in books.values():
+            all_books.extend(book_list)
     else:
-        context.user_data["contact"] = update.message.text  # Якщо ввів вручну
+        all_books = books.get(query.data, [])
 
-    # Кнопки вибору терміну оренди
-    duration_buttons = ReplyKeyboardMarkup(
-        [
-            ["10 днів", "14 днів"],
-            ["21 день", "30 днів"]
-        ],
-        one_time_keyboard=True,
-        resize_keyboard=True,
-    )
+    context.user_data["all_books"] = all_books
+    context.user_data["page"] = 0
+    return await send_book_list(update, context)
 
-    await update.message.reply_text(
-        "Оберіть термін оренди книжки:",
-        reply_markup=duration_buttons
-    )
-    return DURATION
+async def send_book_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    books_list = context.user_data["all_books"]
+    page = context.user_data.get("page", 0)
+    start = page * books_per_page
+    end = start + books_per_page
+    page_books = books_list[start:end]
 
-async def get_duration(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["duration"] = update.message.text
+    keyboard = [[InlineKeyboardButton(book, callback_data=f"book:{book}")] for book in page_books]
 
-    msg = (
-        f"Нова заявка:\nІм'я: {context.user_data['name']}\n"
-        f"Локація: {context.user_data['location']}\n"
-        f"Книга: {context.user_data['book']}\n"
-        f"Контакт: {context.user_data['contact']}\n"
-        f"Термін: {context.user_data['duration']}"
-    )
+    nav_buttons = []
+    if start > 0:
+        nav_buttons.append(InlineKeyboardButton("⬅️ Назад", callback_data="prev"))
+    if end < len(books_list):
+        nav_buttons.append(InlineKeyboardButton("➡️ Далі", callback_data="next"))
 
-    await context.bot.send_message(chat_id=ADMIN_ID, text=msg)
+    if nav_buttons:
+        keyboard.append(nav_buttons)
 
-    await update.message.reply_text("Дякуємо за заявку!")
+    await query.edit_message_text("Оберіть книгу:", reply_markup=InlineKeyboardMarkup(keyboard))
+    return SHOW_BOOKS
+
+async def paginate_books(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if query.data == "next":
+        context.user_data["page"] += 1
+    elif query.data == "prev":
+        context.user_data["page"] -= 1
+    return await send_book_list(update, context)
+
+# Вибір книги
+async def select_book(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data["book"] = query.data.split(":")[1]
+
+    keyboard = [[InlineKeyboardButton(f"{days} днів", callback_data=str(days))] for days in rental_days]
+    await query.edit_message_text("Оберіть кількість днів оренди:", reply_markup=InlineKeyboardMarkup(keyboard))
+    return CHOOSE_RENT_DAYS
+
+# Вибір терміну оренди
+async def choose_days(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data["days"] = query.data
+
+    await query.edit_message_text("Введіть ваш номер телефону або інший контакт:")
+    return GET_CONTACT
+
+# Отримання контактної інформації
+async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    contact = update.message.text
+    context.user_data["contact"] = contact
+
+    # Запис у Google Sheets
+    worksheet.append_row([
+        context.user_data.get("location", ""),
+        context.user_data.get("genre", ""),
+        context.user_data.get("book", ""),
+        context.user_data.get("days", ""),
+        contact
+    ])
+
+    await update.message.reply_text("Дякуємо! Ваш запит прийнято. Очікуйте підтвердження ☕", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Скасовано.")
+    await update.message.reply_text("Дію скасовано.", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
-
+# Webhook для Render
 def main():
-    app = ApplicationBuilder().token(TOKEN).build()
+    app = Application.builder().token(os.getenv("BOT_TOKEN")).build()
 
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
-            LOCATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_location)],
-            BOOK: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_book)],
-            NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_name)],
-            CONTACT: [MessageHandler((filters.CONTACT | (filters.TEXT & ~filters.COMMAND)), get_contact)],
-            DURATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_duration)],
+            CHOOSE_LOCATION: [CallbackQueryHandler(choose_location)],
+            CHOOSE_GENRE: [CallbackQueryHandler(choose_genre)],
+            SHOW_BOOKS: [
+                CallbackQueryHandler(paginate_books, pattern="^(next|prev)$"),
+                CallbackQueryHandler(select_book, pattern="^book:"),
+            ],
+            SELECT_BOOK: [CallbackQueryHandler(select_book)],
+            CHOOSE_RENT_DAYS: [CallbackQueryHandler(choose_days)],
+            GET_CONTACT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_contact)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
     app.add_handler(conv_handler)
 
-    print(f"Запускаю webhook на порті {PORT}...")
     app.run_webhook(
         listen="0.0.0.0",
-        port=PORT,
-        webhook_url=WEBHOOK_URL,
+        port=int(os.environ.get("PORT", 8443)),
+        webhook_url=os.getenv("WEBHOOK_URL")
     )
-
 
 if __name__ == "__main__":
     main()
