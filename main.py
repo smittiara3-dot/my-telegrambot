@@ -1,4 +1,5 @@
 import os
+import json
 from dotenv import load_dotenv
 from telegram import (
     Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardRemove,
@@ -8,10 +9,12 @@ from telegram.ext import (
     MessageHandler, ConversationHandler, filters, ContextTypes,
 )
 import gspread
+from google.oauth2.service_account import Credentials
+from google.auth.transport.requests import AuthorizedSession
 
 load_dotenv()
 
-# Константи
+# Константи станів
 CHOOSE_LOCATION, CHOOSE_GENRE, SHOW_BOOKS, SELECT_BOOK, CHOOSE_RENT_DAYS, GET_CONTACT = range(6)
 
 # Дані
@@ -26,18 +29,26 @@ books = {
 rental_days = [10, 14, 21, 30]
 books_per_page = 2
 
-# Google Sheets
-gc = gspread.service_account(filename='google_credentials.json')
+# Ініціалізація Google Sheets через JSON зі змінної середовища
+json_creds = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
+if not json_creds:
+    raise ValueError("GOOGLE_SERVICE_ACCOUNT_JSON env variable is not set")
+
+creds_dict = json.loads(json_creds)
+credentials = Credentials.from_service_account_info(creds_dict)
+gc = gspread.Client(auth=credentials)
+gc.session = AuthorizedSession(credentials)
+
 sh = gc.open("RentalBookBot")
 worksheet = sh.sheet1
 
-# Старт
+# Старт бота
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton(loc, callback_data=loc)] for loc in locations]
     await update.message.reply_text("Оберіть локацію:", reply_markup=InlineKeyboardMarkup(keyboard))
     return CHOOSE_LOCATION
 
-# Вибір жанру
+# Вибір локації
 async def choose_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -45,11 +56,13 @@ async def choose_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = [[InlineKeyboardButton(genre, callback_data=genre)] for genre in genres]
     keyboard.append([InlineKeyboardButton("Показати всі книги", callback_data="all")])
-    await query.edit_message_text("Оберіть жанр або перегляньте всі книжки:",
-                                  reply_markup=InlineKeyboardMarkup(keyboard))
+    await query.edit_message_text(
+        "Оберіть жанр або перегляньте всі книжки:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
     return CHOOSE_GENRE
 
-# Вибір книги за жанром або всі
+# Вибір жанру або всі книги
 async def choose_genre(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -66,6 +79,7 @@ async def choose_genre(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["page"] = 0
     return await send_book_list(update, context)
 
+# Відправка списку книг із пагінацією
 async def send_book_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     books_list = context.user_data["all_books"]
@@ -88,6 +102,7 @@ async def send_book_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text("Оберіть книгу:", reply_markup=InlineKeyboardMarkup(keyboard))
     return SHOW_BOOKS
 
+# Обробка пагінації
 async def paginate_books(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -107,7 +122,7 @@ async def select_book(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text("Оберіть кількість днів оренди:", reply_markup=InlineKeyboardMarkup(keyboard))
     return CHOOSE_RENT_DAYS
 
-# Вибір терміну оренди
+# Вибір кількості днів оренди
 async def choose_days(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -116,12 +131,11 @@ async def choose_days(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text("Введіть ваш номер телефону або інший контакт:")
     return GET_CONTACT
 
-# Отримання контактної інформації
+# Отримання контакту та запис у Google Sheets
 async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     contact = update.message.text
     context.user_data["contact"] = contact
 
-    # Запис у Google Sheets
     worksheet.append_row([
         context.user_data.get("location", ""),
         context.user_data.get("genre", ""),
@@ -130,14 +144,18 @@ async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
         contact
     ])
 
-    await update.message.reply_text("Дякуємо! Ваш запит прийнято. Очікуйте підтвердження ☕", reply_markup=ReplyKeyboardRemove())
+    await update.message.reply_text(
+        "Дякуємо! Ваш запит прийнято. Очікуйте підтвердження ☕",
+        reply_markup=ReplyKeyboardRemove()
+    )
     return ConversationHandler.END
 
+# Скасування
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Дію скасовано.", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
-# Webhook для Render
+# Головна функція
 def main():
     app = Application.builder().token(os.getenv("BOT_TOKEN")).build()
 
@@ -162,7 +180,7 @@ def main():
     app.run_webhook(
         listen="0.0.0.0",
         port=int(os.environ.get("PORT", 8443)),
-        webhook_url=os.getenv("WEBHOOK_URL")
+        webhook_url=os.getenv("WEBHOOK_URL"),
     )
 
 if __name__ == "__main__":
