@@ -70,7 +70,7 @@ async def get_duration(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await context.bot.send_message(chat_id=ADMIN_ID, text=msg)
 
-    await update.message.reply_text("Дякуємо за заявку! Адміністратор скоро зв'яжеться з вами.")
+    await update.message.reply_text("Дякуємо за заявку!")
     return ConversationHandler.END
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -105,3 +105,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
