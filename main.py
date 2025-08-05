@@ -29,8 +29,11 @@ books = {
 rental_days = [10, 14, 21, 30]
 books_per_page = 2
 
-# OAuth scope для Google Sheets API
-SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
+# OAuth scope для Google Sheets API (виправлено)
+SCOPES = [
+    'https://www.googleapis.com/auth/spreadsheets',
+    'https://www.googleapis.com/auth/drive'
+]
 
 # Ініціалізація Google Sheets з JSON зі змінної середовища
 json_creds = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
@@ -43,6 +46,7 @@ credentials = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
 gc = gspread.Client(auth=credentials)
 gc.session = AuthorizedSession(credentials)
 
+# Важливо: переконайся, що бот має доступ до цієї таблиці
 sh = gc.open("RentalBookBot")
 worksheet = sh.sheet1
 
