@@ -77,6 +77,23 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return CHOOSE_LOCATION
 
 
+async def show_locations(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.callback_query:
+        query = update.callback_query
+        await query.answer()
+        keyboard = get_paginated_buttons(locations, 0, "location", locations_per_page)
+        await query.edit_message_text(
+            "👋 *Вас вітає Тиха Поличка!*\nСучасний і зручний спосіб оренди книжок у затишних місцях.\n\nОберіть локацію:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown"
+        )
+        context.user_data["location_page"] = 0
+        return CHOOSE_LOCATION
+    else:
+        # Якщо виклик не з callback_query
+        return await start(update, context)
+
+
 async def choose_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -101,13 +118,11 @@ async def choose_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def show_genres(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Якщо це callback_query — запрос відповіді
     if update.callback_query:
         query = update.callback_query
         await query.answer()
         message_func = query.edit_message_text
     else:
-        # Якщо це message (наприклад, з start), - reply_text
         message_func = update.message.reply_text
 
     keyboard = [[InlineKeyboardButton(genre, callback_data=f"genre:{genre}")] for genre in genres]
@@ -202,7 +217,6 @@ async def choose_days(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     context.user_data["days"] = query.data.split(":", 1)[1]
-    # Запит імені через звичайне текстове повідомлення
     await query.edit_message_text("Введіть ваше ім'я:")
     return GET_NAME
 
@@ -219,7 +233,6 @@ async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     contact = update.message.contact.phone_number if update.message.contact else update.message.text.strip()
     context.user_data["contact"] = contact
 
-    # Логування для дебагу
     logger.info("Отримане замовлення: %s", pprint.pformat(context.user_data))
 
     data = context.user_data
@@ -260,7 +273,7 @@ async def go_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "back:books":
         return await show_books(update, context)
     elif data == "back:locations":
-        return await start(update, context)
+        return await show_locations(update, context)
 
 
 def main():
@@ -291,6 +304,7 @@ def main():
         port=int(os.getenv("PORT", 8443)),
         webhook_url=os.getenv("WEBHOOK_URL")
     )
+
 
 if __name__ == "__main__":
     main()
