@@ -1,4 +1,3 @@
-# main.py
 import os
 import json
 import logging
@@ -13,6 +12,7 @@ from telegram.ext import (
 import gspread
 from google.oauth2.service_account import Credentials
 from google.auth.transport.requests import AuthorizedSession
+import pprint
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -53,18 +53,10 @@ gc.session = AuthorizedSession(credentials)
 sh = gc.open("RentalBookBot")
 worksheet = sh.sheet1
 
-# --- Handlers ---
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = get_paginated_buttons(locations, 0, "location")
-    text = "👋 *Вас вітає Тиха Поличка!*\nСучасний і зручний спосіб оренди книжок у затишних місцях.\n\nОберіть локацію:"
-    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-    context.user_data["location_page"] = 0
-    return CHOOSE_LOCATION
-
-def get_paginated_buttons(items, page, prefix):
-    start = page * books_per_page
-    end = start + books_per_page
+def get_paginated_buttons(items, page, prefix, page_size):
+    start = page * page_size
+    end = start + page_size
     buttons = [[InlineKeyboardButton(name, callback_data=f"{prefix}:{name}")] for name in items[start:end]]
     nav = []
     if page > 0:
@@ -75,6 +67,16 @@ def get_paginated_buttons(items, page, prefix):
         buttons.append(nav)
     return buttons
 
+# --- Handlers ---
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = get_paginated_buttons(locations, 0, "location", locations_per_page)
+    text = "👋 *Вас вітає Тиха Поличка!*\nСучасний і зручний спосіб оренди книжок у затишних місцях.\n\nОберіть локацію:"
+    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    context.user_data["location_page"] = 0
+    return CHOOSE_LOCATION
+
+
 async def choose_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -83,26 +85,43 @@ async def choose_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "location_next":
         context.user_data["location_page"] = page + 1
-        keyboard = get_paginated_buttons(locations, page + 1, "location")
+        keyboard = get_paginated_buttons(locations, page + 1, "location", locations_per_page)
         await query.edit_message_text("Оберіть локацію:", reply_markup=InlineKeyboardMarkup(keyboard))
         return CHOOSE_LOCATION
     elif data == "location_prev":
         context.user_data["location_page"] = page - 1
-        keyboard = get_paginated_buttons(locations, page - 1, "location")
+        keyboard = get_paginated_buttons(locations, page - 1, "location", locations_per_page)
         await query.edit_message_text("Оберіть локацію:", reply_markup=InlineKeyboardMarkup(keyboard))
         return CHOOSE_LOCATION
 
     context.user_data["location"] = data.split(":", 1)[1]
+
+    # Показуємо жанри
+    return await show_genres(update, context)
+
+
+async def show_genres(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Якщо це callback_query — запрос відповіді
+    if update.callback_query:
+        query = update.callback_query
+        await query.answer()
+        message_func = query.edit_message_text
+    else:
+        # Якщо це message (наприклад, з start), - reply_text
+        message_func = update.message.reply_text
+
     keyboard = [[InlineKeyboardButton(genre, callback_data=f"genre:{genre}")] for genre in genres]
     keyboard.append([InlineKeyboardButton("📚 Показати всі книги", callback_data="genre:all")])
     keyboard.append([InlineKeyboardButton("🔙 Назад до локацій", callback_data="back:locations")])
-    await query.edit_message_text("Оберіть жанр:", reply_markup=InlineKeyboardMarkup(keyboard))
+
+    await message_func("Оберіть жанр:", reply_markup=InlineKeyboardMarkup(keyboard))
     return CHOOSE_GENRE
+
 
 async def choose_genre(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    genre = query.data.split(":")[1]
+    genre = query.data.split(":", 1)[1]
 
     if genre == "all":
         all_books = sum(book_data.values(), [])
@@ -117,6 +136,7 @@ async def choose_genre(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["books"] = all_books
     context.user_data["book_page"] = 0
     return await show_books(update, context)
+
 
 async def show_books(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -143,14 +163,16 @@ async def show_books(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text("Оберіть книгу:", reply_markup=InlineKeyboardMarkup(buttons))
     return SHOW_BOOKS
 
+
 async def book_navigation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     if query.data == "book_next":
         context.user_data["book_page"] += 1
-    else:
+    elif query.data == "book_prev":
         context.user_data["book_page"] -= 1
     return await show_books(update, context)
+
 
 async def book_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -175,12 +197,15 @@ async def book_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
     return BOOK_DETAILS
 
+
 async def choose_days(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    context.user_data["days"] = query.data.split(":")[1]
+    context.user_data["days"] = query.data.split(":", 1)[1]
+    # Запит імені через звичайне текстове повідомлення
     await query.edit_message_text("Введіть ваше ім'я:")
     return GET_NAME
+
 
 async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["name"] = update.message.text.strip()
@@ -189,9 +214,13 @@ async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Надішліть ваш номер телефону:", reply_markup=reply_markup)
     return GET_CONTACT
 
+
 async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     contact = update.message.contact.phone_number if update.message.contact else update.message.text.strip()
     context.user_data["contact"] = contact
+
+    # Логування для дебагу
+    logger.info("Отримане замовлення: %s", pprint.pformat(context.user_data))
 
     data = context.user_data
     worksheet.append_row([
@@ -214,21 +243,25 @@ async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup([[button]]), parse_mode="Markdown")
     return CONFIRMATION
 
+
 async def confirm_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     await query.edit_message_text("🎉 Дякуємо за замовлення! Радий бачити вас серед наших читачів ☕")
     return ConversationHandler.END
 
+
 async def go_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data
+
     if data == "back:genres":
-        return await choose_location(update, context)
+        return await show_genres(update, context)
     elif data == "back:books":
         return await show_books(update, context)
     elif data == "back:locations":
         return await start(update, context)
+
 
 def main():
     app = Application.builder().token(os.getenv("BOT_TOKEN")).build()
