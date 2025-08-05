@@ -32,7 +32,7 @@ books = {
     "Детектив": ["Шерлок Холмс", "Вбивство в «Східному експресі»"],
 }
 rental_days = [10, 14, 21, 30]
-books_per_page = 2
+books_per_page = 10
 
 # OAuth scope для Google Sheets API
 SCOPES = [
@@ -196,3 +196,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
