@@ -204,7 +204,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 def main():
-    app = Application.builder().token(os.getenv("TELEGRAM_BOT_TOKEN")).build()
+    app = Application.builder().token(os.getenv("BOT_TOKEN")).build()
 
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
@@ -228,3 +228,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
