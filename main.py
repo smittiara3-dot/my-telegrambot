@@ -115,10 +115,8 @@ async def handle_book(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return SHOW_BOOKS
     context.user_data["selected_book"] = book
 
-    msg = f"📖 *{book['title']}*
-"
-    msg += f"📝 {book['description']}
-"
+    msg = f"📖 *{book['title']}*"
+    msg += f"📝 {book['description']}"
     msg += f"💰 Оренда: {book['price']} грн"
     keyboard = [
         [InlineKeyboardButton("✅ Орендувати", callback_data="confirm_rent")],
@@ -236,3 +234,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
