@@ -1,11 +1,12 @@
 services:
-  - type: web
+  - type: worker
     name: book-rent-bot
     env: python
     buildCommand: ""
     startCommand: python bot.py
     envVars:
       - key: TOKEN
-        value: "8409973335:AAHaYO-_K8_gPdcYPtO7ycWerEUFq4bgPpk"
+        value: "56565"
       - key: ADMIN_CHAT_ID
         value: "1332202691"
+
