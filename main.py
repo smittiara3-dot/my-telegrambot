@@ -1,6 +1,6 @@
 import os
 import nest_asyncio
-from telegram import Update, ReplyKeyboardMarkup
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -49,12 +49,39 @@ async def get_book(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["name"] = update.message.text
-    await update.message.reply_text("Залиште номер телефону або email:")
+
+    contact_button = ReplyKeyboardMarkup(
+        [[KeyboardButton(text="📱 Поділитись номером", request_contact=True)]],
+        one_time_keyboard=True,
+        resize_keyboard=True,
+    )
+
+    await update.message.reply_text(
+        "Будь ласка, натисніть кнопку, щоб поділитися своїм номером телефону:",
+        reply_markup=contact_button
+    )
     return CONTACT
 
 async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["contact"] = update.message.text
-    await update.message.reply_text("На скільки днів бажаєте орендувати?")
+    if update.message.contact:
+        context.user_data["contact"] = update.message.contact.phone_number
+    else:
+        context.user_data["contact"] = update.message.text  # Якщо ввів вручну
+
+    # Кнопки вибору терміну оренди
+    duration_buttons = ReplyKeyboardMarkup(
+        [
+            ["10 днів", "14 днів"],
+            ["21 день", "30 днів"]
+        ],
+        one_time_keyboard=True,
+        resize_keyboard=True,
+    )
+
+    await update.message.reply_text(
+        "Оберіть термін оренди книжки:",
+        reply_markup=duration_buttons
+    )
     return DURATION
 
 async def get_duration(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -65,7 +92,7 @@ async def get_duration(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Локація: {context.user_data['location']}\n"
         f"Книга: {context.user_data['book']}\n"
         f"Контакт: {context.user_data['contact']}\n"
-        f"Термін: {context.user_data['duration']} днів"
+        f"Термін: {context.user_data['duration']}"
     )
 
     await context.bot.send_message(chat_id=ADMIN_ID, text=msg)
@@ -87,7 +114,7 @@ def main():
             LOCATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_location)],
             BOOK: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_book)],
             NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_name)],
-            CONTACT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_contact)],
+            CONTACT: [MessageHandler((filters.CONTACT | (filters.TEXT & ~filters.COMMAND)), get_contact)],
             DURATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_duration)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
@@ -105,4 +132,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
