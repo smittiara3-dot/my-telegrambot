@@ -12,8 +12,8 @@ books_catalog = {
     "Львів – BookCup": ["Тигролови – Іван Багряний", "Фелікс Австрія – Софія Андрухович"]
 }
 
-TOKEN = os.getenv("TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_CHAT_ID"))  # Твій Telegram ID
+TOKEN = os.getenv("8409973335:AAHaYO-_K8_gPdcYPtO7ycWerEUFq4bgPpk")
+ADMIN_ID = int(os.getenv("1332202691"))  # Твій Telegram ID
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -92,4 +92,5 @@ conv = ConversationHandler(
 
 app.add_handler(conv)
 print("Бот працює...")
+
 app.run_polling()
