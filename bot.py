@@ -1,3 +1,6 @@
+import telegram
+print("python-telegram-bot version:", telegram.__version__)
+
 import os
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ConversationHandler, ContextTypes
@@ -93,3 +96,4 @@ conv = ConversationHandler(
 app.add_handler(conv)
 print("Бот працює...")
 app.run_polling()
+
