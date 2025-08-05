@@ -1,6 +1,9 @@
 import os
 from telegram import Update, ReplyKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ConversationHandler, ContextTypes
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, MessageHandler, filters,
+    ConversationHandler, ContextTypes
+)
 
 # Стани діалогу
 LOCATION, BOOK, NAME, CONTACT, DURATION = range(5)
@@ -13,14 +16,18 @@ books_catalog = {
 }
 
 TOKEN = os.getenv("TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_CHAT_ID"))  # Твій Telegram ID
+ADMIN_ID = int(os.getenv("ADMIN_CHAT_ID"))
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Вітаємо в боті *оренди книжок* у кав'ярнях!\n\n"
         "📚 Вибирай книжку – читай на місці або бери з собою!\n\n"
         "Давай оберемо локацію 📍",
-        reply_markup=ReplyKeyboardMarkup([[l] for l in locations], one_time_keyboard=True, resize_keyboard=True)
+        reply_markup=ReplyKeyboardMarkup(
+            [[l] for l in locations],
+            one_time_keyboard=True,
+            resize_keyboard=True
+        )
     )
     return LOCATION
 
@@ -29,7 +36,11 @@ async def get_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
     books = books_catalog.get(update.message.text, [])
     await update.message.reply_text(
         "Ось доступні книжки на цій локації:\n📚",
-        reply_markup=ReplyKeyboardMarkup([[b] for b in books], one_time_keyboard=True, resize_keyboard=True)
+        reply_markup=ReplyKeyboardMarkup(
+            [[b] for b in books],
+            one_time_keyboard=True,
+            resize_keyboard=True
+        )
     )
     return BOOK
 
@@ -74,24 +85,25 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Скасовано.")
     return ConversationHandler.END
 
-# --- MAIN ---
+def main():
+    app = ApplicationBuilder().token(TOKEN).build()
 
-app = ApplicationBuilder().token(TOKEN).build()
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("start", start)],
+        states={
+            LOCATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_location)],
+            BOOK: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_book)],
+            NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_name)],
+            CONTACT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_contact)],
+            DURATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_duration)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)]
+    )
 
-conv = ConversationHandler(
-    entry_points=[CommandHandler("start", start)],
-    states={
-        LOCATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_location)],
-        BOOK: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_book)],
-        NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_name)],
-        CONTACT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_contact)],
-        DURATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_duration)],
-    },
-    fallbacks=[CommandHandler("cancel", cancel)]
-)
+    app.add_handler(conv_handler)
 
-app.add_handler(conv)
-print("Бот працює...")
+    print("Бот працює...")
+    app.run_polling()
 
-app.run_polling()
-
+if __name__ == "__main__":
+    main()
