@@ -1,101 +1,87 @@
 import os
-import logging
-import asyncio
-from telegram import ReplyKeyboardMarkup
+import nest_asyncio
+from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import (
-    Application,
+    ApplicationBuilder,
     CommandHandler,
     MessageHandler,
     filters,
     ConversationHandler,
     ContextTypes,
 )
-from dotenv import load_dotenv
 
-load_dotenv()
+nest_asyncio.apply()
 
-TOKEN = os.getenv("TOKEN")
-ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-
-logging.basicConfig(level=logging.INFO)
-
-# Conversation steps
+# Стани діалогу
 LOCATION, BOOK, NAME, CONTACT, DURATION = range(5)
 
-# Прикладні дані
-locations = ["Кавʼярня A", "Кавʼярня B"]
-books = {
-    "Кавʼярня A": ["1984", "Гаррі Поттер", "Майстер і Маргарита"],
-    "Кавʼярня B": ["Атлант розправив плечі", "Кобзар", "Великий Гетсбі"]
+locations = ["Київ – ЛітКав’ярня", "Львів – BookCup"]
+books_catalog = {
+    "Київ – ЛітКав’ярня": ["1984 – Дж. Орвелл", "Місто – В. Підмогильний"],
+    "Львів – BookCup": ["Тигролови – Іван Багряний", "Фелікс Австрія – Софія Андрухович"],
 }
 
-user_data_temp = {}
+TOKEN = os.getenv("TOKEN")
+ADMIN_ID = int(os.getenv("ADMIN_CHAT_ID"))
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+PORT = int(os.getenv("PORT", 8443))  # За замовчуванням 8443 або 8080, як хочеш
 
-# Старт
-async def start(update, context: ContextTypes.DEFAULT_TYPE):
-    reply_keyboard = [locations]
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Привіт! Обери локацію полиці 📍",
-        reply_markup=ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True)
+        "👋 Вітаємо в боті оренди книжок!\n\nОберіть локацію:",
+        reply_markup=ReplyKeyboardMarkup([[loc] for loc in locations], one_time_keyboard=True, resize_keyboard=True),
     )
     return LOCATION
 
-# Локація
-async def get_location(update, context):
-    user_data_temp["location"] = update.message.text
-    reply_keyboard = [books.get(user_data_temp["location"], [])]
+async def get_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["location"] = update.message.text
+    books = books_catalog.get(update.message.text, [])
     await update.message.reply_text(
-        "Обери книгу 📚",
-        reply_markup=ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True)
+        "Оберіть книгу:",
+        reply_markup=ReplyKeyboardMarkup([[b] for b in books], one_time_keyboard=True, resize_keyboard=True),
     )
     return BOOK
 
-# Книга
-async def get_book(update, context):
-    user_data_temp["book"] = update.message.text
-    await update.message.reply_text("Введи своє імʼя:")
+async def get_book(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["book"] = update.message.text
+    await update.message.reply_text("Як вас звати?")
     return NAME
 
-# Імʼя
-async def get_name(update, context):
-    user_data_temp["name"] = update.message.text
-    await update.message.reply_text("Введи номер телефону або контакт:")
+async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["name"] = update.message.text
+    await update.message.reply_text("Залиште номер телефону або email:")
     return CONTACT
 
-# Контакт
-async def get_contact(update, context):
-    user_data_temp["contact"] = update.message.text
-    await update.message.reply_text("На скільки днів хочеш взяти книгу?")
+async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["contact"] = update.message.text
+    await update.message.reply_text("На скільки днів бажаєте орендувати?")
     return DURATION
 
-# Тривалість
-async def get_duration(update, context):
-    user_data_temp["duration"] = update.message.text
-    message = (
-        f"Нова оренда книги 📖:\n\n"
-        f"🏠 Локація: {user_data_temp['location']}\n"
-        f"📚 Книга: {user_data_temp['book']}\n"
-        f"👤 Імʼя: {user_data_temp['name']}\n"
-        f"📞 Контакт: {user_data_temp['contact']}\n"
-        f"🕒 Термін: {user_data_temp['duration']} днів"
+async def get_duration(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["duration"] = update.message.text
+
+    msg = (
+        f"Нова заявка:\nІм'я: {context.user_data['name']}\n"
+        f"Локація: {context.user_data['location']}\n"
+        f"Книга: {context.user_data['book']}\n"
+        f"Контакт: {context.user_data['contact']}\n"
+        f"Термін: {context.user_data['duration']} днів"
     )
 
-    await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=message)
-    await update.message.reply_text("Дякуємо! Дані передані адміністратору. ✅")
+    await context.bot.send_message(chat_id=ADMIN_ID, text=msg)
 
+    await update.message.reply_text("Дякуємо за заявку! Адміністратор скоро зв'яжеться з вами.")
     return ConversationHandler.END
 
-# Скасування
-async def cancel(update, context):
-    await update.message.reply_text("Дію скасовано.")
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Скасовано.")
     return ConversationHandler.END
 
-# Основний webhook-запуск
-async def main():
-    app = Application.builder().token(TOKEN).build()
 
-    conv = ConversationHandler(
+def main():
+    app = ApplicationBuilder().token(TOKEN).build()
+
+    conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
             LOCATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_location)],
@@ -107,17 +93,15 @@ async def main():
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
-    app.add_handler(conv)
+    app.add_handler(conv_handler)
 
-    # Встановити webhook
-    await app.bot.set_webhook(url=WEBHOOK_URL)
-
-    # Запуск
-    await app.run_webhook(
+    print(f"Запускаю webhook на порті {PORT}...")
+    app.run_webhook(
         listen="0.0.0.0",
-        port=int(os.environ.get("PORT", 8080)),
-        webhook_url=WEBHOOK_URL
+        port=PORT,
+        webhook_url=WEBHOOK_URL,
     )
 
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
