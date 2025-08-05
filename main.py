@@ -1,10 +1,10 @@
+# main.py
 import os
 import json
 import logging
 from dotenv import load_dotenv
 from telegram import (
-    Update, InlineKeyboardMarkup, InlineKeyboardButton,
-    ReplyKeyboardRemove, KeyboardButton, ReplyKeyboardMarkup
+    Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardRemove, KeyboardButton, ReplyKeyboardMarkup,
 )
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
@@ -15,191 +15,220 @@ from google.oauth2.service_account import Credentials
 from google.auth.transport.requests import AuthorizedSession
 
 load_dotenv()
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-CHOOSE_LOCATION, CHOOSE_GENRE, SHOW_BOOKS, CHOOSE_BOOK, CHOOSE_RENT_DAYS, GET_NAME, GET_CONTACT, CONFIRM_ORDER = range(8)
+# Conversation steps
+CHOOSE_LOCATION, CHOOSE_GENRE, SHOW_BOOKS, BOOK_DETAILS, CHOOSE_RENT_DAYS, GET_NAME, GET_CONTACT, CONFIRMATION = range(8)
 
+# Config
 locations = [f"Кав'ярня {chr(65+i)}" for i in range(20)]
 genres = ["Фантастика", "Роман", "Історія", "Детектив"]
 rental_days = [10, 14, 21, 30]
 books_per_page = 10
 locations_per_page = 10
 
-books = {
+book_data = {
     "Фантастика": [
-        {"title": f"Фантастична книга {i+1}", "description": f"Опис фантастичної книги {i+1}", "price": (i+1)*2} for i in range(15)
+        {"title": f"Фантастична книга {i}", "desc": f"Це опис фантастичної книги {i}.", "price": 30 + i}
+        for i in range(1, 15)
     ],
     "Роман": [
-        {"title": "Анна Кареніна", "description": "Класичний роман Льва Толстого", "price": 25},
-        {"title": "Гордість і упередження", "description": "Роман Джейн Остін про кохання і гордість", "price": 20},
+        {"title": "Анна Кареніна", "desc": "Трагічна історія кохання Анни Кареніної.", "price": 40},
+        {"title": "Гордість і упередження", "desc": "Класика романтичної літератури.", "price": 35}
     ],
     "Історія": [
-        {"title": "Історія України", "description": "Все про історію України", "price": 30},
-        {"title": "Європа ХХ ст.", "description": "Історичні події Європи у 20 столітті", "price": 28},
+        {"title": "Історія України", "desc": "Огляд історії України від давнини до сьогодення.", "price": 50}
     ],
     "Детектив": [
-        {"title": "Шерлок Холмс", "description": "Класичний детектив про Шерлока", "price": 22},
-        {"title": "Вбивство в «Східному експресі»", "description": "Детектив від Агати Крісті", "price": 24},
-    ],
+        {"title": "Шерлок Холмс", "desc": "Класичні детективи про Шерлока Холмса.", "price": 45}
+    ]
 }
 
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
-
-json_creds = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
-if not json_creds:
-    raise ValueError("GOOGLE_SERVICE_ACCOUNT_JSON env variable is not set")
-
-creds_dict = json.loads(json_creds)
+creds_dict = json.loads(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"))
 credentials = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
 gc = gspread.Client(auth=credentials)
 gc.session = AuthorizedSession(credentials)
 sh = gc.open("RentalBookBot")
 worksheet = sh.sheet1
 
+# --- Handlers ---
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.clear()
-    keyboard = [
-        [InlineKeyboardButton(loc, callback_data=f"location:{loc}")] for loc in locations[:locations_per_page]
-    ]
-    await update.message.reply_text(
-        "👋 *Вас вітає Тиха Поличка!* – сучасний і зручний спосіб оренди книжок у затишних для вас місцях.",
-        parse_mode='Markdown'
-    )
-    await update.message.reply_text("Оберіть локацію:", reply_markup=InlineKeyboardMarkup(keyboard))
+    keyboard = get_paginated_buttons(locations, 0, "location")
+    text = "👋 *Вас вітає Тиха Поличка!*\nСучасний і зручний спосіб оренди книжок у затишних місцях.\n\nОберіть локацію:"
+    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    context.user_data["location_page"] = 0
     return CHOOSE_LOCATION
 
-async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def get_paginated_buttons(items, page, prefix):
+    start = page * books_per_page
+    end = start + books_per_page
+    buttons = [[InlineKeyboardButton(name, callback_data=f"{prefix}:{name}")] for name in items[start:end]]
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("⬅️", callback_data=f"{prefix}_prev"))
+    if end < len(items):
+        nav.append(InlineKeyboardButton("➡️", callback_data=f"{prefix}_next"))
+    if nav:
+        buttons.append(nav)
+    return buttons
+
+async def choose_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    location = query.data.split(":")[1]
-    context.user_data["location"] = location
-    keyboard = [[InlineKeyboardButton(g, callback_data=f"genre:{g}")] for g in genres]
-    keyboard.append([InlineKeyboardButton("📚 Всі книги", callback_data="genre:all")])
-    keyboard.append([InlineKeyboardButton("🏠 До локацій", callback_data="back_to_locations")])
-    await query.edit_message_text("Оберіть жанр:", reply_markup=InlineKeyboardMarkup(keyboard))
-    return SHOW_BOOKS
+    data = query.data
+    page = context.user_data.get("location_page", 0)
 
-async def handle_genre(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if data == "location_next":
+        context.user_data["location_page"] = page + 1
+        keyboard = get_paginated_buttons(locations, page + 1, "location")
+        await query.edit_message_text("Оберіть локацію:", reply_markup=InlineKeyboardMarkup(keyboard))
+        return CHOOSE_LOCATION
+    elif data == "location_prev":
+        context.user_data["location_page"] = page - 1
+        keyboard = get_paginated_buttons(locations, page - 1, "location")
+        await query.edit_message_text("Оберіть локацію:", reply_markup=InlineKeyboardMarkup(keyboard))
+        return CHOOSE_LOCATION
+
+    context.user_data["location"] = data.split(":", 1)[1]
+    keyboard = [[InlineKeyboardButton(genre, callback_data=f"genre:{genre}")] for genre in genres]
+    keyboard.append([InlineKeyboardButton("📚 Показати всі книги", callback_data="genre:all")])
+    keyboard.append([InlineKeyboardButton("🔙 Назад до локацій", callback_data="back:locations")])
+    await query.edit_message_text("Оберіть жанр:", reply_markup=InlineKeyboardMarkup(keyboard))
+    return CHOOSE_GENRE
+
+async def choose_genre(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     genre = query.data.split(":")[1]
-    context.user_data["genre"] = genre
-    all_books = []
+
     if genre == "all":
-        for g in books.values():
-            all_books.extend(g)
+        all_books = sum(book_data.values(), [])
     else:
-        all_books = books.get(genre, [])
+        all_books = book_data.get(genre, [])
 
-    context.user_data["book_list"] = all_books
+    if not all_books:
+        await query.edit_message_text("Немає книг у цьому жанрі.")
+        return ConversationHandler.END
 
-    keyboard = []
-    for b in all_books[:books_per_page]:
-        keyboard.append([InlineKeyboardButton(b["title"], callback_data=f"book:{b['title']}")])
+    context.user_data["genre"] = genre
+    context.user_data["books"] = all_books
+    context.user_data["book_page"] = 0
+    return await show_books(update, context)
 
-    keyboard.append([InlineKeyboardButton("🏠 До локацій", callback_data="back_to_locations")])
-    keyboard.append([InlineKeyboardButton("🔙 До жанрів", callback_data="back_to_genres")])
-    await query.edit_message_text("Оберіть книгу:", reply_markup=InlineKeyboardMarkup(keyboard))
-    return CHOOSE_BOOK
-
-async def handle_book(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def show_books(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    title = query.data.split(":")[1]
-    book_list = context.user_data.get("book_list", [])
-    book = next((b for b in book_list if b["title"] == title), None)
+    books = context.user_data["books"]
+    page = context.user_data.get("book_page", 0)
+    start, end = page * books_per_page, (page + 1) * books_per_page
+    page_books = books[start:end]
+
+    buttons = [[InlineKeyboardButton(book["title"], callback_data=f"book:{book['title']}")] for book in page_books]
+    nav = []
+    if start > 0:
+        nav.append(InlineKeyboardButton("⬅️", callback_data="book_prev"))
+    if end < len(books):
+        nav.append(InlineKeyboardButton("➡️", callback_data="book_next"))
+    if nav:
+        buttons.append(nav)
+
+    buttons.append([
+        InlineKeyboardButton("🔙 До жанрів", callback_data="back:genres"),
+        InlineKeyboardButton("🔙 До локацій", callback_data="back:locations")
+    ])
+
+    await query.edit_message_text("Оберіть книгу:", reply_markup=InlineKeyboardMarkup(buttons))
+    return SHOW_BOOKS
+
+async def book_navigation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if query.data == "book_next":
+        context.user_data["book_page"] += 1
+    else:
+        context.user_data["book_page"] -= 1
+    return await show_books(update, context)
+
+async def book_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    title = query.data.split(":", 1)[1]
+    genre = context.user_data["genre"]
+    books = book_data.get(genre, []) if genre != "all" else sum(book_data.values(), [])
+    book = next((b for b in books if b["title"] == title), None)
+
     if not book:
         await query.edit_message_text("Книгу не знайдено.")
         return SHOW_BOOKS
-    context.user_data["selected_book"] = book
 
-    msg = f"📖 *{book['title']}*"
-    msg += f"📝 {book['description']}"
-    msg += f"💰 Оренда: {book['price']} грн"
-    keyboard = [
-        [InlineKeyboardButton("✅ Орендувати", callback_data="confirm_rent")],
-        [InlineKeyboardButton("🔙 До книг", callback_data="back_to_books")],
-        [InlineKeyboardButton("🗂 До жанрів", callback_data="back_to_genres")],
-        [InlineKeyboardButton("🏠 До локацій", callback_data="back_to_locations")]
-    ]
-    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-    return CHOOSE_RENT_DAYS
+    context.user_data["book"] = book
+    text = f"*{book['title']}*\n\n{book['desc']}\n\n💸 *Ціна оренди*: {book['price']} грн"
+    buttons = [[InlineKeyboardButton(f"{d} днів", callback_data=f"days:{d}")] for d in rental_days]
+    buttons.append([
+        InlineKeyboardButton("🔙 До книг", callback_data="back:books"),
+        InlineKeyboardButton("🔙 До жанрів", callback_data="back:genres"),
+        InlineKeyboardButton("🔙 До локацій", callback_data="back:locations")
+    ])
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+    return BOOK_DETAILS
 
-async def choose_rent_days(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def choose_days(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    keyboard = [[InlineKeyboardButton(f"{d} днів", callback_data=f"rent:{d}")] for d in rental_days]
-    keyboard.append([InlineKeyboardButton("🔙 До книг", callback_data="back_to_books")])
-    keyboard.append([InlineKeyboardButton("🏠 До локацій", callback_data="back_to_locations")])
-    await query.edit_message_text("Оберіть кількість днів оренди:", reply_markup=InlineKeyboardMarkup(keyboard))
+    context.user_data["days"] = query.data.split(":")[1]
+    await query.edit_message_text("Введіть ваше ім'я:")
     return GET_NAME
 
 async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    rent_days = int(query.data.split(":")[1])
-    context.user_data["days"] = rent_days
-    await query.edit_message_text("Введіть, будь ласка, ваше ім'я:")
+    context.user_data["name"] = update.message.text.strip()
+    button = KeyboardButton("📱 Поділитися номером", request_contact=True)
+    reply_markup = ReplyKeyboardMarkup([[button]], one_time_keyboard=True, resize_keyboard=True)
+    await update.message.reply_text("Надішліть ваш номер телефону:", reply_markup=reply_markup)
     return GET_CONTACT
 
 async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["name"] = update.message.text
-    button = KeyboardButton("Поділитися номером телефону", request_contact=True)
-    await update.message.reply_text("Поділіться своїм номером:", reply_markup=ReplyKeyboardMarkup([[button]], one_time_keyboard=True))
-    return CONFIRM_ORDER
-
-async def confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    contact = update.message.contact.phone_number if update.message.contact else update.message.text
+    contact = update.message.contact.phone_number if update.message.contact else update.message.text.strip()
     context.user_data["contact"] = contact
 
-    loc = context.user_data.get("location", "[не вибрано]")
-    genre = context.user_data.get("genre", "[не вибрано]")
-    book = context.user_data.get("selected_book", {})
-    name = context.user_data.get("name", "[не вказано]")
-    days = context.user_data.get("days", 0)
-    price = book.get("price", 0)
+    data = context.user_data
+    worksheet.append_row([
+        data.get("location", ""), data.get("genre", ""), data.get("book", {}).get("title", ""),
+        data.get("days", ""), data.get("name", ""), contact
+    ])
 
-    worksheet.append_row([loc, genre, book.get("title", "-"), name, contact, days, price])
+    text = (
+        f"📚 *Ваше замовлення:*\n"
+        f"🏠 Локація: {data['location']}\n"
+        f"📖 Книга: {data['book']['title']}\n"
+        f"🗂 Жанр: {data['genre']}\n"
+        f"📆 Днів: {data['days']}\n"
+        f"👤 Ім'я: {data['name']}\n"
+        f"📞 Контакт: {data['contact']}\n\n"
+        f"Сума до оплати: *{data['book']['price']} грн*"
+    )
 
-    msg = f"📚 *Ваше замовлення:*"
-    msg += f"🏠 Локація: {loc}"
-    msg += f"📖 Книга: {book.get('title', '-')}"
-    msg += f"🗂 Жанр: {genre}"
-    msg += f"📆 Днів: {days}"
-    msg += f"👤 Ім'я: {name}"
-    msg += f"📞 Контакт: {contact}"
-    msg += f"Сума до оплати: {price} грн"
+    button = InlineKeyboardButton("💳 Оплатити", callback_data="pay_now")
+    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup([[button]]), parse_mode="Markdown")
+    return CONFIRMATION
 
-    keyboard = [[InlineKeyboardButton("💳 Оплатити", url="https://example.com/pay")]]
-    await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-    await update.message.reply_text("Дякуємо, що обрали наш сервіс! 📖")
+async def confirm_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("🎉 Дякуємо за замовлення! Радий бачити вас серед наших читачів ☕")
     return ConversationHandler.END
 
-async def fallback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Скористайтесь кнопками для навігації.")
-
-async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    data = update.callback_query.data
-    if data.startswith("location:"):
-        return await handle_location(update, context)
-    elif data.startswith("genre:"):
-        return await handle_genre(update, context)
-    elif data.startswith("book:"):
-        return await handle_book(update, context)
-    elif data.startswith("rent:"):
-        return await get_name(update, context)
-    elif data == "confirm_rent":
-        return await choose_rent_days(update, context)
-    elif data == "back_to_books":
-        return await handle_genre(update, context)
-    elif data == "back_to_genres":
-        return await handle_location(update, context)
-    elif data == "back_to_locations":
+async def go_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    data = query.data
+    if data == "back:genres":
+        return await choose_location(update, context)
+    elif data == "back:books":
+        return await show_books(update, context)
+    elif data == "back:locations":
         return await start(update, context)
-    await update.callback_query.answer("Невідома дія")
-    return ConversationHandler.END
 
 def main():
     app = Application.builder().token(os.getenv("BOT_TOKEN")).build()
@@ -207,24 +236,28 @@ def main():
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
-            CHOOSE_LOCATION: [CallbackQueryHandler(callback_router)],
-            CHOOSE_GENRE: [CallbackQueryHandler(callback_router)],
-            SHOW_BOOKS: [CallbackQueryHandler(callback_router)],
-            CHOOSE_BOOK: [CallbackQueryHandler(callback_router)],
-            CHOOSE_RENT_DAYS: [CallbackQueryHandler(callback_router)],
-            GET_NAME: [CallbackQueryHandler(callback_router)],
-            GET_CONTACT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_contact)],
-            CONFIRM_ORDER: [MessageHandler(filters.CONTACT | filters.TEXT, confirm_order)]
+            CHOOSE_LOCATION: [CallbackQueryHandler(choose_location, pattern="^location.*")],
+            CHOOSE_GENRE: [CallbackQueryHandler(choose_genre, pattern="^genre:.*"), CallbackQueryHandler(go_back, pattern="^back:locations$")],
+            SHOW_BOOKS: [
+                CallbackQueryHandler(book_navigation, pattern="^book_(next|prev)$"),
+                CallbackQueryHandler(book_detail, pattern="^book:.*"),
+                CallbackQueryHandler(go_back, pattern="^back:(genres|locations)$")
+            ],
+            BOOK_DETAILS: [CallbackQueryHandler(choose_days, pattern="^days:.*"), CallbackQueryHandler(go_back, pattern="^back:(books|genres|locations)$")],
+            CHOOSE_RENT_DAYS: [CallbackQueryHandler(choose_days)],
+            GET_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_name)],
+            GET_CONTACT: [MessageHandler(filters.CONTACT | filters.TEXT, get_contact)],
+            CONFIRMATION: [CallbackQueryHandler(confirm_payment, pattern="^pay_now$")],
         },
-        fallbacks=[MessageHandler(filters.COMMAND, fallback_handler)]
+        fallbacks=[CommandHandler("cancel", lambda u, c: u.message.reply_text("❌ Скасовано."))],
     )
 
     app.add_handler(conv_handler)
-    app.add_handler(CallbackQueryHandler(callback_router))
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=int(os.getenv("PORT", 8443)),
+        webhook_url=os.getenv("WEBHOOK_URL")
+    )
 
-    app.run_polling()
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
-
-
