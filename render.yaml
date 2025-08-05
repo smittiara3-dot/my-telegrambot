@@ -1,14 +1,18 @@
 services:
-  - type: worker
-    name: book-rent-bot
+  - type: web
+    name: book-bot
     env: python
-    buildCommand: ""
+    plan: free
+    buildCommand: pip install -r requirements.txt
     startCommand: python bot.py
     envVars:
       - key: TOKEN
-        value: 8409973335:AAHaYO-_K8_gPdcYPtO7ycWerEUFq4bgPpk
+        value: YOUR_TELEGRAM_BOT_TOKEN
       - key: ADMIN_CHAT_ID
-        value: "1332202691"
+        value: "123456789"
+      - key: WEBHOOK_URL
+        value: https://book-bot.onrender.com/webhook
+
 
 
 
