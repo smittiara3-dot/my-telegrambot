@@ -149,16 +149,16 @@ async def confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     worksheet.append_row(list(order.values()))
 
-    msg = (
-        f"📚 *Ваше замовлення:*\n"
-        f"🏠 Локація: {order['Локація']}\n"
-        f"📖 Книга: {order['Книга']}\n"
-        f"🗂 Жанр: {order['Жанр']}\n"
-        f"📆 Днів: {order['Днів']}\n"
-        f"👤 Ім'я: {order['Ім'я']}\n"
-        f"📞 Контакт: {order['Контакт']}\n\n"
-        f"💰 Сума до оплати: {order['Ціна']} грн"
-    )
+msg = (
+    f"📚 *Ваше замовлення:*\n"
+    f"🏠 Локація: {order['Локація']}\n"
+    f"📖 Книга: {order['Книга']}\n"
+    f"🗂 Жанр: {order['Жанр']}\n"
+    f"📆 Днів: {order['Дні']}\n"
+    f"👤 Ім'я: {order[\"Ім'я\"]}\n"
+    f"📞 Контакт: {order['Контакт']}\n\n"
+    f"Сума до оплати: {order['Ціна']} грн"
+)
 
     keyboard = [[InlineKeyboardButton("💳 Оплатити", url="https://example.com/pay")]]
     await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
@@ -238,3 +238,4 @@ async def main():
 if __name__ == "__main__":
     import asyncio
     asyncio.run(main())
+
