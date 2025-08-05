@@ -6,6 +6,6 @@ services:
     startCommand: python bot.py
     envVars:
       - key: TOKEN
-        value: встав_свій_токен_бота
+        value: "8409973335:AAHaYO-_K8_gPdcYPtO7ycWerEUFq4bgPpk"
       - key: ADMIN_CHAT_ID
-        value: твій_telegram_ID
+        value: "1332202691"
