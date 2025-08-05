@@ -2,6 +2,7 @@ services:
   - type: worker
     name: book-rent-bot
     env: python
+    pythonVersion: "3.13"
     buildCommand: ""
     startCommand: python bot.py
     envVars:
@@ -9,5 +10,6 @@ services:
         value: "8409973335:AAHaYO-_K8_gPdcYPtO7ycWerEUFq4bgPpk"
       - key: ADMIN_CHAT_ID
         value: "1332202691"
+
 
 
