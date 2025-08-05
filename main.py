@@ -163,21 +163,13 @@ async def confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     worksheet.append_row([loc, genre, book.get("title", "-"), name, contact, days, price])
 
-    msg = f"📚 *Ваше замовлення:*
-"
-    msg += f"🏠 Локація: {loc}
-"
-    msg += f"📖 Книга: {book.get('title', '-')}
-"
-    msg += f"🗂 Жанр: {genre}
-"
-    msg += f"📆 Днів: {days}
-"
-    msg += f"👤 Ім'я: {name}
-"
-    msg += f"📞 Контакт: {contact}
-
-"
+    msg = f"📚 *Ваше замовлення:*"
+    msg += f"🏠 Локація: {loc}"
+    msg += f"📖 Книга: {book.get('title', '-')}"
+    msg += f"🗂 Жанр: {genre}"
+    msg += f"📆 Днів: {days}"
+    msg += f"👤 Ім'я: {name}"
+    msg += f"📞 Контакт: {contact}"
     msg += f"Сума до оплати: {price} грн"
 
     keyboard = [[InlineKeyboardButton("💳 Оплатити", url="https://example.com/pay")]]
@@ -234,4 +226,5 @@ def main():
 
 if __name__ == '__main__':
     main()
+
 
