@@ -29,13 +29,16 @@ books = {
 rental_days = [10, 14, 21, 30]
 books_per_page = 2
 
+# OAuth scope для Google Sheets API
+SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
+
 # Ініціалізація Google Sheets через JSON зі змінної середовища
 json_creds = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
 if not json_creds:
     raise ValueError("GOOGLE_SERVICE_ACCOUNT_JSON env variable is not set")
 
 creds_dict = json.loads(json_creds)
-credentials = Credentials.from_service_account_info(creds_dict)
+credentials = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
 gc = gspread.Client(auth=credentials)
 gc.session = AuthorizedSession(credentials)
 
