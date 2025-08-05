@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: book-rent-bot
+    env: python
+    buildCommand: ""
+    startCommand: python bot.py
+    envVars:
+      - key: TOKEN
+        value: встав_свій_токен_бота
+      - key: ADMIN_CHAT_ID
+        value: твій_telegram_ID
