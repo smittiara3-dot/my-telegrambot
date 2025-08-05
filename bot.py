@@ -1,104 +1,123 @@
-import sys
-print("Python version:", sys.version)
-print("python-telegram-bot version:", __import__('telegram').__version__)
-
-import telegram
-print("python-telegram-bot version:", telegram.__version__)
-
 import os
-from telegram import Update, ReplyKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ConversationHandler, ContextTypes
+import logging
+import asyncio
+from telegram import ReplyKeyboardMarkup
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    ConversationHandler,
+    ContextTypes,
+)
+from dotenv import load_dotenv
 
-# Стани діалогу
-LOCATION, BOOK, NAME, CONTACT, DURATION = range(5)
-
-# Дані
-locations = ["Київ – ЛітКав’ярня", "Львів – BookCup"]
-books_catalog = {
-    "Київ – ЛітКав’ярня": ["1984 – Дж. Орвелл", "Місто – В. Підмогильний"],
-    "Львів – BookCup": ["Тигролови – Іван Багряний", "Фелікс Австрія – Софія Андрухович"]
-}
+load_dotenv()
 
 TOKEN = os.getenv("TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_CHAT_ID"))  # Твій Telegram ID
+ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+logging.basicConfig(level=logging.INFO)
+
+# Conversation steps
+LOCATION, BOOK, NAME, CONTACT, DURATION = range(5)
+
+# Прикладні дані
+locations = ["Кавʼярня A", "Кавʼярня B"]
+books = {
+    "Кавʼярня A": ["1984", "Гаррі Поттер", "Майстер і Маргарита"],
+    "Кавʼярня B": ["Атлант розправив плечі", "Кобзар", "Великий Гетсбі"]
+}
+
+user_data_temp = {}
+
+# Старт
+async def start(update, context: ContextTypes.DEFAULT_TYPE):
+    reply_keyboard = [locations]
     await update.message.reply_text(
-        "👋 Вітаємо в боті *оренди книжок* у кав'ярнях!\n\n"
-        "📚 Вибирай книжку – читай на місці або бери з собою!\n\n"
-        "Давай оберемо локацію 📍",
-        reply_markup=ReplyKeyboardMarkup([[l] for l in locations], one_time_keyboard=True, resize_keyboard=True)
+        "Привіт! Обери локацію полиці 📍",
+        reply_markup=ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True)
     )
     return LOCATION
 
-async def get_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["location"] = update.message.text
-    books = books_catalog.get(update.message.text, [])
+# Локація
+async def get_location(update, context):
+    user_data_temp["location"] = update.message.text
+    reply_keyboard = [books.get(user_data_temp["location"], [])]
     await update.message.reply_text(
-        "Ось доступні книжки на цій локації:\n📚",
-        reply_markup=ReplyKeyboardMarkup([[b] for b in books], one_time_keyboard=True, resize_keyboard=True)
+        "Обери книгу 📚",
+        reply_markup=ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True)
     )
     return BOOK
 
-async def get_book(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["book"] = update.message.text
-    await update.message.reply_text("Як вас звати?")
+# Книга
+async def get_book(update, context):
+    user_data_temp["book"] = update.message.text
+    await update.message.reply_text("Введи своє імʼя:")
     return NAME
 
-async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["name"] = update.message.text
-    await update.message.reply_text("Залиште контактний номер телефону або email:")
+# Імʼя
+async def get_name(update, context):
+    user_data_temp["name"] = update.message.text
+    await update.message.reply_text("Введи номер телефону або контакт:")
     return CONTACT
 
-async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["contact"] = update.message.text
-    await update.message.reply_text("На скільки днів бажаєте орендувати книжку?")
+# Контакт
+async def get_contact(update, context):
+    user_data_temp["contact"] = update.message.text
+    await update.message.reply_text("На скільки днів хочеш взяти книгу?")
     return DURATION
 
-async def get_duration(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["duration"] = update.message.text
-
-    msg = (
-        "📦 Нова заявка на оренду:\n"
-        f"👤 Ім’я: {context.user_data['name']}\n"
-        f"📍 Локація: {context.user_data['location']}\n"
-        f"📚 Книга: {context.user_data['book']}\n"
-        f"📞 Контакт: {context.user_data['contact']}\n"
-        f"🕓 Термін: {context.user_data['duration']} днів"
+# Тривалість
+async def get_duration(update, context):
+    user_data_temp["duration"] = update.message.text
+    message = (
+        f"Нова оренда книги 📖:\n\n"
+        f"🏠 Локація: {user_data_temp['location']}\n"
+        f"📚 Книга: {user_data_temp['book']}\n"
+        f"👤 Імʼя: {user_data_temp['name']}\n"
+        f"📞 Контакт: {user_data_temp['contact']}\n"
+        f"🕒 Термін: {user_data_temp['duration']} днів"
     )
 
-    await context.bot.send_message(chat_id=ADMIN_ID, text=msg)
-
-    await update.message.reply_text(
-        "✅ Дякуємо за заявку!\n"
-        "Наш адміністратор скоро з вами зв’яжеться.\n\n"
-        "📍 Забрати книжку можна на обраній локації. Приємного читання!"
-    )
+    await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=message)
+    await update.message.reply_text("Дякуємо! Дані передані адміністратору. ✅")
 
     return ConversationHandler.END
 
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Скасовано.")
+# Скасування
+async def cancel(update, context):
+    await update.message.reply_text("Дію скасовано.")
     return ConversationHandler.END
 
-# --- MAIN ---
+# Основний webhook-запуск
+async def main():
+    app = Application.builder().token(TOKEN).build()
 
-app = ApplicationBuilder().token(TOKEN).build()
+    conv = ConversationHandler(
+        entry_points=[CommandHandler("start", start)],
+        states={
+            LOCATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_location)],
+            BOOK: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_book)],
+            NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_name)],
+            CONTACT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_contact)],
+            DURATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_duration)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
 
-conv = ConversationHandler(
-    entry_points=[CommandHandler("start", start)],
-    states={
-        LOCATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_location)],
-        BOOK: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_book)],
-        NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_name)],
-        CONTACT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_contact)],
-        DURATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_duration)],
-    },
-    fallbacks=[CommandHandler("cancel", cancel)]
-)
+    app.add_handler(conv)
 
-app.add_handler(conv)
-print("Бот працює...")
-app.run_polling()
+    # Встановити webhook
+    await app.bot.set_webhook(url=WEBHOOK_URL)
 
+    # Запуск
+    await app.run_webhook(
+        listen="0.0.0.0",
+        port=int(os.environ.get("PORT", 8080)),
+        webhook_url=WEBHOOK_URL
+    )
 
+if __name__ == "__main__":
+    asyncio.run(main())
