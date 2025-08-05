@@ -14,10 +14,10 @@ from google.auth.transport.requests import AuthorizedSession
 
 load_dotenv()
 
-# Константи станів
+# Константи для ConversationHandler
 CHOOSE_LOCATION, CHOOSE_GENRE, SHOW_BOOKS, SELECT_BOOK, CHOOSE_RENT_DAYS, GET_CONTACT = range(6)
 
-# Дані
+# Дані для бота
 locations = ["Кав'ярня A", "Кав'ярня B"]
 genres = ["Фантастика", "Роман", "Історія", "Детектив"]
 books = {
@@ -32,26 +32,27 @@ books_per_page = 2
 # OAuth scope для Google Sheets API
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
 
-# Ініціалізація Google Sheets через JSON зі змінної середовища
+# Ініціалізація Google Sheets з JSON зі змінної середовища
 json_creds = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
 if not json_creds:
     raise ValueError("GOOGLE_SERVICE_ACCOUNT_JSON env variable is not set")
 
 creds_dict = json.loads(json_creds)
 credentials = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
+
 gc = gspread.Client(auth=credentials)
 gc.session = AuthorizedSession(credentials)
 
 sh = gc.open("RentalBookBot")
 worksheet = sh.sheet1
 
-# Старт бота
+# Функції бота
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton(loc, callback_data=loc)] for loc in locations]
     await update.message.reply_text("Оберіть локацію:", reply_markup=InlineKeyboardMarkup(keyboard))
     return CHOOSE_LOCATION
 
-# Вибір локації
 async def choose_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -65,7 +66,6 @@ async def choose_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return CHOOSE_GENRE
 
-# Вибір жанру або всі книги
 async def choose_genre(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -82,7 +82,6 @@ async def choose_genre(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["page"] = 0
     return await send_book_list(update, context)
 
-# Відправка списку книг із пагінацією
 async def send_book_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     books_list = context.user_data["all_books"]
@@ -105,7 +104,6 @@ async def send_book_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text("Оберіть книгу:", reply_markup=InlineKeyboardMarkup(keyboard))
     return SHOW_BOOKS
 
-# Обробка пагінації
 async def paginate_books(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -115,7 +113,6 @@ async def paginate_books(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["page"] -= 1
     return await send_book_list(update, context)
 
-# Вибір книги
 async def select_book(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -125,7 +122,6 @@ async def select_book(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text("Оберіть кількість днів оренди:", reply_markup=InlineKeyboardMarkup(keyboard))
     return CHOOSE_RENT_DAYS
 
-# Вибір кількості днів оренди
 async def choose_days(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -134,7 +130,6 @@ async def choose_days(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text("Введіть ваш номер телефону або інший контакт:")
     return GET_CONTACT
 
-# Отримання контакту та запис у Google Sheets
 async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     contact = update.message.text
     context.user_data["contact"] = contact
@@ -153,12 +148,10 @@ async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return ConversationHandler.END
 
-# Скасування
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Дію скасовано.", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
-# Головна функція
 def main():
     app = Application.builder().token(os.getenv("BOT_TOKEN")).build()
 
@@ -182,8 +175,8 @@ def main():
 
     app.run_webhook(
         listen="0.0.0.0",
-        port=int(os.environ.get("PORT", 8443)),
-        webhook_url=os.getenv("WEBHOOK_URL"),
+        port=int(os.getenv("PORT", 8443)),
+        webhook_url=os.getenv("WEBHOOK_URL")
     )
 
 if __name__ == "__main__":
