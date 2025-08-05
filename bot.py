@@ -1,3 +1,7 @@
+import sys
+print("Python version:", sys.version)
+print("python-telegram-bot version:", __import__('telegram').__version__)
+
 import telegram
 print("python-telegram-bot version:", telegram.__version__)
 
@@ -96,4 +100,5 @@ conv = ConversationHandler(
 app.add_handler(conv)
 print("Бот працює...")
 app.run_polling()
+
 
