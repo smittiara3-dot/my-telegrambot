@@ -149,6 +149,13 @@ async def get_chat_id_for_order(order_id: str) -> int | None:
     return None
 
 
+#################
+
+# Health check endpoint для cron job
+async def health_check(request):
+    return web.Response(text="OK", status=200)
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [
@@ -499,9 +506,19 @@ async def init_app():
             START_MENU: [CallbackQueryHandler(start_menu_handler, pattern=r"^start:.*")],
             DEPOSIT_PAYMENT: [CallbackQueryHandler(start_menu_handler, pattern=r"^deposit_done")],
             CHOOSE_LOCATION: [CallbackQueryHandler(choose_location, pattern=r"^location.*")],
-            CHOOSE_GENRE: [CallbackQueryHandler(choose_genre, pattern=r"^genre:.*"), CallbackQueryHandler(go_back, pattern=r"^back:locations$")],
-            SHOW_BOOKS: [CallbackQueryHandler(book_navigation, pattern=r"^book_(next|prev)$"), CallbackQueryHandler(book_detail, pattern=r"^book:.*"), CallbackQueryHandler(go_back, pattern=r"^back:(genres|locations)$")],
-            BOOK_DETAILS: [CallbackQueryHandler(choose_days, pattern=r"^days:.*"), CallbackQueryHandler(go_back, pattern=r"^back:(books|genres|locations)$")],
+            CHOOSE_GENRE: [
+                CallbackQueryHandler(choose_genre, pattern=r"^genre:.*"),
+                CallbackQueryHandler(go_back, pattern=r"^back:locations$"),
+            ],
+            SHOW_BOOKS: [
+                CallbackQueryHandler(book_navigation, pattern=r"^book_(next|prev)$"),
+                CallbackQueryHandler(book_detail, pattern=r"^book:.*"),
+                CallbackQueryHandler(go_back, pattern=r"^back:(genres|locations)$"),
+            ],
+            BOOK_DETAILS: [
+                CallbackQueryHandler(choose_days, pattern=r"^days:.*"),
+                CallbackQueryHandler(go_back, pattern=r"^back:(books|genres|locations)$"),
+            ],
             CHOOSE_RENT_DAYS: [CallbackQueryHandler(days_chosen, pattern=r"^days:\d+$")],
             GET_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_name)],
             GET_CONTACT: [MessageHandler(filters.CONTACT | filters.TEXT, get_contact)],
@@ -516,6 +533,7 @@ async def init_app():
     await application.start()
 
     app = web.Application()
+    app.router.add_get("/", health_check)  # Додано health check для cron job
     app.router.add_post("/telegram_webhook", telegram_webhook_handler)
     app.router.add_post("/monopay_callback", monopay_webhook)
     app.bot_updater = application
