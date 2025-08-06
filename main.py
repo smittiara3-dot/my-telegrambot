@@ -78,7 +78,8 @@ sh = gc.open("RentalBookBot")
 worksheet = sh.sheet1
 
 
-def get_paginated_buttons(items, page, prefix, page_size):
+def get_paginated_buttons(items, page, prefix, page_size, add_start_button=False):
+    """Генерує кнопки пагінації з додаванням кнопки 'На початок', якщо add_start_button=True"""
     start = page * page_size
     end = min(start + page_size, len(items))
     buttons = [[InlineKeyboardButton(name, callback_data=f"{prefix}:{name}")] for name in items[start:end]]
@@ -89,6 +90,8 @@ def get_paginated_buttons(items, page, prefix, page_size):
         nav.append(InlineKeyboardButton("➡️", callback_data=f"{prefix}_next"))
     if nav:
         buttons.append(nav)
+    if add_start_button:
+        buttons.append([InlineKeyboardButton("🏠 На початок", callback_data="back:start")])
     return buttons
 
 
@@ -149,22 +152,28 @@ async def get_chat_id_for_order(order_id: str) -> int | None:
     return None
 
 
-#################
-
 # Health check endpoint для cron job
 async def health_check(request):
     return web.Response(text="OK", status=200)
 
 
+# Команда /start завжди перезапускає діалог
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [
-            InlineKeyboardButton("Я новий клієнт", callback_data="start:new_client"),
-            InlineKeyboardButton("Я вже користуюсь сервісом", callback_data="start:existing_client"),
+    if update.message:
+        # Якщо діалог вже є, скидаємо
+        await context.application.reset()
+        context.user_data.clear()
+        keyboard = [
+            [
+                InlineKeyboardButton("Я новий клієнт", callback_data="start:new_client"),
+                InlineKeyboardButton("Я вже користуюсь сервісом", callback_data="start:existing_client"),
+            ]
         ]
-    ]
-    await update.message.reply_text("Вітаємо! Оберіть, будь ласка, варіант:", reply_markup=InlineKeyboardMarkup(keyboard))
-    return START_MENU
+        await update.message.reply_text("Вітаємо! Оберіть, будь ласка, варіант:", reply_markup=InlineKeyboardMarkup(keyboard))
+        return START_MENU
+    else:
+        # підтримка для callback_query /start (на всяк випадок)
+        return await start_menu_handler(update, context)
 
 
 async def start_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -185,7 +194,8 @@ async def start_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await query.edit_message_text(
                 "Будь ласка, сплатіть заставу за посиланням нижче:", reply_markup=InlineKeyboardMarkup(buttons)
             )
-            keyboard = [[InlineKeyboardButton("Перейти до вибору локації", callback_data="deposit_done")]]
+            keyboard = [[InlineKeyboardButton("Перейти до вибору локації", callback_data="deposit_done")],
+                        [InlineKeyboardButton("🏠 На початок", callback_data="back:start")]]
             await query.message.reply_text(
                 "Після оплати натисніть кнопку нижче, щоб продовжити:", reply_markup=InlineKeyboardMarkup(keyboard)
             )
@@ -196,12 +206,51 @@ async def start_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     elif data == "start:existing_client":
         context.user_data["is_new_client"] = False
-        await query.edit_message_text("Вітаємо з поверненням! Оберіть локацію:")
-        return await show_locations(update, context)
+        try:
+            await query.edit_message_text(
+                "Вітаємо з поверненням! Оберіть локацію:",
+                reply_markup=InlineKeyboardMarkup(
+                    get_paginated_buttons(locations, 0, "location", locations_per_page, add_start_button=True)
+                ),
+            )
+        except BadRequest as e:
+            if "Message is not modified" not in str(e):
+                raise
+        context.user_data["location_page"] = 0
+        return CHOOSE_LOCATION
 
     elif data == "deposit_done":
-        await query.edit_message_text("Дякуємо за оплату застави! Оберіть локацію:")
-        return await show_locations(update, context)
+        try:
+            await query.edit_message_text(
+                "Дякуємо за оплату застави! Оберіть локацію:",
+                reply_markup=InlineKeyboardMarkup(
+                    get_paginated_buttons(locations, 0, "location", locations_per_page, add_start_button=True)
+                ),
+            )
+        except BadRequest as e:
+            if "Message is not modified" not in str(e):
+                raise
+        context.user_data["location_page"] = 0
+        return CHOOSE_LOCATION
+
+    elif data == "back:start":
+        context.user_data.clear()
+        try:
+            await query.edit_message_text(
+                "Вітаємо! Оберіть, будь ласка, варіант:",
+                reply_markup=InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton("Я новий клієнт", callback_data="start:new_client"),
+                            InlineKeyboardButton("Я вже користуюсь сервісом", callback_data="start:existing_client"),
+                        ]
+                    ]
+                ),
+            )
+        except BadRequest as e:
+            if "Message is not modified" not in str(e):
+                raise
+        return START_MENU
 
     else:
         await query.answer("Невідома дія")
@@ -212,9 +261,14 @@ async def show_locations(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.callback_query:
         query = update.callback_query
         await query.answer()
-        keyboard = get_paginated_buttons(locations, 0, "location", locations_per_page)
         try:
-            await query.edit_message_text("👋 *Оберіть локацію:*", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+            await query.edit_message_text(
+                "👋 *Оберіть локацію:*",
+                reply_markup=InlineKeyboardMarkup(
+                    get_paginated_buttons(locations, 0, "location", locations_per_page, add_start_button=True)
+                ),
+                parse_mode="Markdown",
+            )
         except BadRequest as e:
             if "Message is not modified" not in str(e):
                 raise
@@ -234,7 +288,7 @@ async def choose_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "location_next":
         next_page = min(current_page + 1, max_page)
         context.user_data["location_page"] = next_page
-        keyboard = get_paginated_buttons(locations, next_page, "location", locations_per_page)
+        keyboard = get_paginated_buttons(locations, next_page, "location", locations_per_page, add_start_button=True)
         try:
             await query.edit_message_text("Оберіть локацію:", reply_markup=InlineKeyboardMarkup(keyboard))
         except BadRequest as e:
@@ -244,7 +298,7 @@ async def choose_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "location_prev":
         prev_page = max(current_page - 1, 0)
         context.user_data["location_page"] = prev_page
-        keyboard = get_paginated_buttons(locations, prev_page, "location", locations_per_page)
+        keyboard = get_paginated_buttons(locations, prev_page, "location", locations_per_page, add_start_button=True)
         try:
             await query.edit_message_text("Оберіть локацію:", reply_markup=InlineKeyboardMarkup(keyboard))
         except BadRequest as e:
@@ -266,7 +320,10 @@ async def show_genres(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = [[InlineKeyboardButton(genre, callback_data=f"genre:{genre}")] for genre in genres]
     keyboard.append([InlineKeyboardButton("📚 Показати всі книги", callback_data="genre:all")])
-    keyboard.append([InlineKeyboardButton("🔙 Назад до локацій", callback_data="back:locations")])
+    keyboard.append(
+        [InlineKeyboardButton("🔙 Назад до локацій", callback_data="back:locations"),
+         InlineKeyboardButton("🏠 На початок", callback_data="back:start")]
+    )
     try:
         await message_func("Оберіть жанр:", reply_markup=InlineKeyboardMarkup(keyboard))
     except BadRequest as e:
@@ -312,7 +369,13 @@ async def show_books(update: Update, context: ContextTypes.DEFAULT_TYPE):
         nav.append(InlineKeyboardButton("➡️", callback_data="book_next"))
     if nav:
         buttons.append(nav)
-    buttons.append([InlineKeyboardButton("🔙 До жанрів", callback_data="back:genres"), InlineKeyboardButton("🔙 До локацій", callback_data="back:locations")])
+    buttons.append(
+        [
+            InlineKeyboardButton("🔙 До жанрів", callback_data="back:genres"),
+            InlineKeyboardButton("🔙 До локацій", callback_data="back:locations"),
+            InlineKeyboardButton("🏠 На початок", callback_data="back:start"),
+        ]
+    )
     try:
         await query.edit_message_text("Оберіть книгу:", reply_markup=InlineKeyboardMarkup(buttons))
     except BadRequest as e:
@@ -357,6 +420,7 @@ async def book_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
         InlineKeyboardButton("🔙 До книг", callback_data="back:books"),
         InlineKeyboardButton("🔙 До жанрів", callback_data="back:genres"),
         InlineKeyboardButton("🔙 До локацій", callback_data="back:locations"),
+        InlineKeyboardButton("🏠 На початок", callback_data="back:start"),
     ]
     try:
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([buttons]), parse_mode="Markdown")
@@ -375,6 +439,7 @@ async def choose_days(update: Update, context: ContextTypes.DEFAULT_TYPE):
         InlineKeyboardButton("🔙 До книг", callback_data="back:books"),
         InlineKeyboardButton("🔙 До жанрів", callback_data="back:genres"),
         InlineKeyboardButton("🔙 До локацій", callback_data="back:locations"),
+        InlineKeyboardButton("🏠 На початок", callback_data="back:start"),
     ]
     try:
         await query.edit_message_text("Оберіть термін оренди:", reply_markup=InlineKeyboardMarkup([buttons]))
@@ -389,7 +454,11 @@ async def days_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     days = int(query.data.split(":")[1])
     context.user_data["days"] = str(days)
-    await query.edit_message_text("Введіть ваше ім'я:")
+    try:
+        await query.edit_message_text("Введіть ваше ім'я:")
+    except BadRequest as e:
+        if "Message is not modified" not in str(e):
+            raise
     return GET_NAME
 
 
@@ -464,6 +533,24 @@ async def go_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await show_books(update, context)
     elif data == "back:locations":
         return await show_locations(update, context)
+    elif data == "back:start":
+        context.user_data.clear()
+        try:
+            await query.edit_message_text(
+                "Вітаємо! Оберіть, будь ласка, варіант:",
+                reply_markup=InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton("Я новий клієнт", callback_data="start:new_client"),
+                            InlineKeyboardButton("Я вже користуюсь сервісом", callback_data="start:existing_client"),
+                        ]
+                    ]
+                ),
+            )
+        except BadRequest as e:
+            if "Message is not modified" not in str(e):
+                raise
+        return START_MENU
 
 
 async def monopay_webhook(request):
@@ -503,37 +590,36 @@ async def init_app():
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
-            START_MENU: [CallbackQueryHandler(start_menu_handler, pattern=r"^start:.*")],
-            DEPOSIT_PAYMENT: [CallbackQueryHandler(start_menu_handler, pattern=r"^deposit_done")],
-            CHOOSE_LOCATION: [CallbackQueryHandler(choose_location, pattern=r"^location.*")],
+            START_MENU: [CallbackQueryHandler(start_menu_handler, pattern=r"^start:.*"), CallbackQueryHandler(go_back, pattern=r"^back:start$")],
+            DEPOSIT_PAYMENT: [CallbackQueryHandler(start_menu_handler, pattern=r"^deposit_done"), CallbackQueryHandler(go_back, pattern=r"^back:start$")],
+            CHOOSE_LOCATION: [CallbackQueryHandler(choose_location, pattern=r"^location.*"), CallbackQueryHandler(go_back, pattern=r"^back:start$")],
             CHOOSE_GENRE: [
                 CallbackQueryHandler(choose_genre, pattern=r"^genre:.*"),
-                CallbackQueryHandler(go_back, pattern=r"^back:locations$"),
+                CallbackQueryHandler(go_back, pattern=r"^back:(locations|start)$"),
             ],
             SHOW_BOOKS: [
                 CallbackQueryHandler(book_navigation, pattern=r"^book_(next|prev)$"),
                 CallbackQueryHandler(book_detail, pattern=r"^book:.*"),
-                CallbackQueryHandler(go_back, pattern=r"^back:(genres|locations)$"),
+                CallbackQueryHandler(go_back, pattern=r"^back:(genres|locations|start)$"),
             ],
             BOOK_DETAILS: [
                 CallbackQueryHandler(choose_days, pattern=r"^days:.*"),
-                CallbackQueryHandler(go_back, pattern=r"^back:(books|genres|locations)$"),
+                CallbackQueryHandler(go_back, pattern=r"^back:(books|genres|locations|start)$"),
             ],
-            CHOOSE_RENT_DAYS: [CallbackQueryHandler(days_chosen, pattern=r"^days:\d+$")],
+            CHOOSE_RENT_DAYS: [CallbackQueryHandler(days_chosen, pattern=r"^days:\d+$"), CallbackQueryHandler(go_back, pattern=r"^back:start$")],
             GET_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_name)],
             GET_CONTACT: [MessageHandler(filters.CONTACT | filters.TEXT, get_contact)],
-            CONFIRMATION: [CallbackQueryHandler(confirm_payment, pattern=r"^pay_now$")],
+            CONFIRMATION: [CallbackQueryHandler(confirm_payment, pattern=r"^pay_now$"), CallbackQueryHandler(go_back, pattern=r"^back:start$")],
         },
         fallbacks=[CommandHandler("cancel", lambda u, c: u.message.reply_text("❌ Скасовано."))],
     )
-
     application.add_handler(conv_handler)
 
     await application.initialize()
     await application.start()
 
     app = web.Application()
-    app.router.add_get("/", health_check)  # Додано health check для cron job
+    app.router.add_get("/", health_check)  # health check endpoint
     app.router.add_post("/telegram_webhook", telegram_webhook_handler)
     app.router.add_post("/monopay_callback", monopay_webhook)
     app.bot_updater = application
