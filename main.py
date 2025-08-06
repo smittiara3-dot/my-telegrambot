@@ -343,8 +343,10 @@ async def book_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return SHOW_BOOKS
 
     context.user_data["book"] = book
-    text = f"*{book['title']}*\n\n{book['desc']}\n\n💸 *Ціна оренди за день*: {book['price']} грн"
-    buttons = [InlineKeyboardButton(f"{d} днів", callback_data=f"days:{d}") for d in rental_days] + [
+    text = f"*{book['title']}*\n\n{book['desc']}\n\n💸 *Ціна оренди:*\n7 днів — 70 грн\n14 днів — 140 грн"
+    buttons = [
+        InlineKeyboardButton("7 днів", callback_data="days:7"),
+        InlineKeyboardButton("14 днів", callback_data="days:14"),
         InlineKeyboardButton("🔙 До книг", callback_data="back:books"),
         InlineKeyboardButton("🔙 До жанрів", callback_data="back:genres"),
         InlineKeyboardButton("🔙 До локацій", callback_data="back:locations"),
@@ -400,8 +402,8 @@ async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data["chat_id"] = update.effective_chat.id
 
     days = int(data.get("days", 7))
-    price_per_day = rental_price_map.get(days, 70)
-    data["book"]["price"] = price_per_day
+    price_total = rental_price_map.get(days, 70)
+    data["book"]["price"] = price_total
 
     logger.info("Отримане замовлення: %s", pprint.pformat(data))
 
@@ -410,7 +412,6 @@ async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Виникла проблема при збереженні замовлення. Спробуйте пізніше.")
         return ConversationHandler.END
 
-    price_total = price_per_day * days
     text = (
         f"📚 *Ваше замовлення:*\n"
         f"🏠 Локація: {data['location']}\n"
@@ -432,17 +433,14 @@ async def confirm_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     data = context.user_data
     days = int(data.get("days", 7))
-    price_per_day = rental_price_map.get(days, 70)
-    price_total = price_per_day * days
+    price_total = rental_price_map.get(days, 70)
     description = f"Оренда книги {data['book']['title']} на {days} днів"
     order_id = data["order_id"]
     try:
         invoice_url = await create_monopay_invoice(price_total, description, order_id)
         buttons = [[InlineKeyboardButton("Оплатити MonoPay", url=invoice_url)]]
         await query.edit_message_text(
-            "Будь ласка, оплатіть за посиланням нижче:",
-            reply_markup=InlineKeyboardMarkup(buttons),
-            parse_mode="Markdown",
+            "Будь ласка, оплатіть за посиланням нижче:", reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown"
         )
     except Exception as e:
         logger.error(f"Помилка створення інвойсу MonoPay: {e}")
