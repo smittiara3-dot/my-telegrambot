@@ -11,11 +11,12 @@ services:
       - key: ADMIN_CHAT_ID
         value: "1332202691"
       - key: WEBHOOK_URL
-        value: "https://my-telegrambot-d0gp.onrender.com/"
+        value: "https://my-telegrambot-d0gp.onrender.com"
       - key: MONOPAY_TOKEN
         value: "uOsUlxHhwx2koIxLJhLipenZDNyXs9jCJ4ZL7Mhx7hIc"
       - key: PORT
         value: "8443"
+
 
 
 
