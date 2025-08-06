@@ -79,7 +79,6 @@ worksheet = sh.sheet1
 
 
 def get_paginated_buttons(items, page, prefix, page_size, add_start_button=False):
-    """Генерує кнопки пагінації з додаванням кнопки 'На початок', якщо add_start_button=True"""
     start = page * page_size
     end = min(start + page_size, len(items))
     buttons = [[InlineKeyboardButton(name, callback_data=f"{prefix}:{name}")] for name in items[start:end]]
@@ -152,17 +151,13 @@ async def get_chat_id_for_order(order_id: str) -> int | None:
     return None
 
 
-# Health check endpoint для cron job
 async def health_check(request):
     return web.Response(text="OK", status=200)
 
 
-# Команда /start завжди перезапускає діалог
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message:
-        # Якщо діалог вже є, скидаємо
-        await context.application.reset()
-        context.user_data.clear()
+        context.user_data.clear()  # очищення стану користувача
         keyboard = [
             [
                 InlineKeyboardButton("Я новий клієнт", callback_data="start:new_client"),
@@ -172,7 +167,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Вітаємо! Оберіть, будь ласка, варіант:", reply_markup=InlineKeyboardMarkup(keyboard))
         return START_MENU
     else:
-        # підтримка для callback_query /start (на всяк випадок)
+        # Якщо виклик з callback_query, просто показати стартове меню
         return await start_menu_handler(update, context)
 
 
@@ -194,8 +189,10 @@ async def start_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await query.edit_message_text(
                 "Будь ласка, сплатіть заставу за посиланням нижче:", reply_markup=InlineKeyboardMarkup(buttons)
             )
-            keyboard = [[InlineKeyboardButton("Перейти до вибору локації", callback_data="deposit_done")],
-                        [InlineKeyboardButton("🏠 На початок", callback_data="back:start")]]
+            keyboard = [
+                [InlineKeyboardButton("Перейти до вибору локації", callback_data="deposit_done")],
+                [InlineKeyboardButton("🏠 На початок", callback_data="back:start")],
+            ]
             await query.message.reply_text(
                 "Після оплати натисніть кнопку нижче, щоб продовжити:", reply_markup=InlineKeyboardMarkup(keyboard)
             )
