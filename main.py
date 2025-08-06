@@ -29,8 +29,8 @@ logger = logging.getLogger(__name__)
 # --- Змінні середовища ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MONOPAY_TOKEN = os.getenv("MONOPAY_TOKEN")
-MONOPAY_WEBHOOK_SECRET = os.getenv("MONOPAY_WEBHOOK_SECRET", None)  # Якщо маєте
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # https://yourdomain.com
+MONOPAY_WEBHOOK_SECRET = os.getenv("MONOPAY_WEBHOOK_SECRET", None)
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # https://yourdomain.com без кінцевого слеша
 PORT = int(os.getenv("PORT", 8443))
 
 # Conversation handler states
@@ -42,7 +42,7 @@ PORT = int(os.getenv("PORT", 8443))
     CHOOSE_RENT_DAYS,
     GET_NAME,
     GET_CONTACT,
-    CONFIRMATION
+    CONFIRMATION,
 ) = range(8)
 
 # --- Конфіг ---
@@ -65,8 +65,11 @@ book_data = {
     "Детектив": [{"title": "Шерлок Холмс", "desc": "Класичні детективи про Шерлока Холмса.", "price": 45}],
 }
 
-# --- Google Sheets setup ---
-SCOPES = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+# --- Google Sheets ---
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
 creds_dict = json.loads(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"))
 credentials = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
 gc = gspread.Client(auth=credentials)
@@ -96,7 +99,7 @@ async def create_monopay_invoice(amount: int, description: str, order_id: str) -
         "Content-Type": "application/json",
     }
     data = {
-        "amount": amount * 100,
+        "amount": amount * 100,  # сума в копійках
         "currency": 980,
         "description": description,
         "orderId": order_id,
@@ -106,8 +109,9 @@ async def create_monopay_invoice(amount: int, description: str, order_id: str) -
     async with ClientSession() as session:
         async with session.post(url, headers=headers, json=data) as response:
             resp_json = await response.json()
-            if response.status == 200 and "invoiceUrl" in resp_json:
-                return resp_json["invoiceUrl"]
+            if response.status == 200 and ("pageUrl" in resp_json or "invoiceUrl" in resp_json):
+                # MonoPay іноді повертає pageUrl замість invoiceUrl
+                return resp_json.get("pageUrl") or resp_json.get("invoiceUrl")
             else:
                 logger.error(f"MonoPay invoice creation error: {resp_json}")
                 raise Exception(f"Помилка створення інвойсу MonoPay: {resp_json}")
@@ -428,28 +432,31 @@ async def init_app():
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
-            CHOOSE_LOCATION: [CallbackQueryHandler(choose_location, pattern="^location.*")],
-            CHOOSE_GENRE: [CallbackQueryHandler(choose_genre, pattern="^genre:.*"), CallbackQueryHandler(go_back, pattern="^back:locations$")],
+            CHOOSE_LOCATION: [CallbackQueryHandler(choose_location, pattern=r"^location.*")],
+            CHOOSE_GENRE: [
+                CallbackQueryHandler(choose_genre, pattern=r"^genre:.*"),
+                CallbackQueryHandler(go_back, pattern=r"^back:locations$"),
+            ],
             SHOW_BOOKS: [
-                CallbackQueryHandler(book_navigation, pattern="^book_(next|prev)$"),
-                CallbackQueryHandler(book_detail, pattern="^book:.*"),
-                CallbackQueryHandler(go_back, pattern="^back:(genres|locations)$"),
+                CallbackQueryHandler(book_navigation, pattern=r"^book_(next|prev)$"),
+                CallbackQueryHandler(book_detail, pattern=r"^book:.*"),
+                CallbackQueryHandler(go_back, pattern=r"^back:(genres|locations)$"),
             ],
             BOOK_DETAILS: [
-                CallbackQueryHandler(choose_days, pattern="^days:.*"),
-                CallbackQueryHandler(go_back, pattern="^back:(books|genres|locations)$"),
+                CallbackQueryHandler(choose_days, pattern=r"^days:.*"),
+                CallbackQueryHandler(go_back, pattern=r"^back:(books|genres|locations)$"),
             ],
             CHOOSE_RENT_DAYS: [CallbackQueryHandler(choose_days)],
             GET_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_name)],
             GET_CONTACT: [MessageHandler(filters.CONTACT | filters.TEXT, get_contact)],
-            CONFIRMATION: [CallbackQueryHandler(confirm_payment, pattern="^pay_now$")],
+            CONFIRMATION: [CallbackQueryHandler(confirm_payment, pattern=r"^pay_now$")],
         },
         fallbacks=[CommandHandler("cancel", lambda u, c: u.message.reply_text("❌ Скасовано."))],
     )
 
     application.add_handler(conv_handler)
 
-    # Важливо — ініціалізація і старт Telegram Application!
+    # Обов'язкова ініціалізація та старт!
     await application.initialize()
     await application.start()
 
@@ -463,7 +470,6 @@ async def init_app():
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
 
-    # Реєстрація webhook Telegram бота
     await application.bot.set_webhook(f"{WEBHOOK_URL.rstrip('/')}/telegram_webhook")
 
     logger.info(f"Server started on port {PORT}")
