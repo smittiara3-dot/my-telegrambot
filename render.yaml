@@ -7,13 +7,14 @@ services:
     startCommand: "python main.py"
     envVars:
       - key: TOKEN
-        value: "8409973335:AAHaYO-_K8_gPdcYPtO7ycWerEUFq4bgPpk"
+        value: "8447751977:AAFXGtRnMuK_SnSMnyTu6aYO2pdmwIhY_ZU"
       - key: ADMIN_CHAT_ID
         value: "1332202691"
       - key: WEBHOOK_URL
         value: "https://my-telegrambot-d0gp.onrender.com/"
       - key: PORT
         value: "8443"
+
 
 
 
