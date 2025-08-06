@@ -3,4 +3,3 @@ nest_asyncio
 python-dotenv
 gspread
 oauth2client
-aiohttp
