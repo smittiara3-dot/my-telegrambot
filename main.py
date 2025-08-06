@@ -26,17 +26,17 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- Змінні середовища ---
+# --- Змінні середовища — переконайтесь, щоб у Render.yaml або .env збігались назви ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MONOPAY_TOKEN = os.getenv("MONOPAY_TOKEN")
 MONOPAY_WEBHOOK_SECRET = os.getenv("MONOPAY_WEBHOOK_SECRET", None)
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # https://yourdomain.com без кінцевого слеша
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # без кінцевого слешу
 PORT = int(os.getenv("PORT", 8443))
 
-# Conversation handler states
+# --- Conversation handler states ---
 (
     START_MENU,
-    DEPOSIT_PAYMENT,     # новий крок для оплати застави
+    DEPOSIT_PAYMENT,
     CHOOSE_LOCATION,
     CHOOSE_GENRE,
     SHOW_BOOKS,
@@ -50,9 +50,10 @@ PORT = int(os.getenv("PORT", 8443))
 # --- Конфіг ---
 locations = [f"Кав'ярня {chr(65 + i)}" for i in range(20)]
 genres = ["Фантастика", "Роман", "Історія", "Детектив"]
-# Залишаємо лише 2 варіанти оренди
-rental_days = [7, 14]  # 7 днів та 14 днів
-rental_price_map = {7: 70, 14: 140}  # Ціни за відповідний термін
+
+rental_days = [7, 14]  # лише два варіанти
+rental_price_map = {7: 70, 14: 140}
+
 books_per_page = 10
 locations_per_page = 10
 
@@ -81,6 +82,7 @@ gc.session = AuthorizedSession(credentials)
 sh = gc.open("RentalBookBot")
 worksheet = sh.sheet1
 
+
 def get_paginated_buttons(items, page, prefix, page_size):
     start = page * page_size
     end = min(start + page_size, len(items))
@@ -94,6 +96,7 @@ def get_paginated_buttons(items, page, prefix, page_size):
         buttons.append(nav)
     return buttons
 
+
 async def create_monopay_invoice(amount: int, description: str, order_id: str) -> str:
     url = "https://api.monobank.ua/api/merchant/invoice/create"
     headers = {
@@ -101,7 +104,7 @@ async def create_monopay_invoice(amount: int, description: str, order_id: str) -
         "Content-Type": "application/json",
     }
     data = {
-        "amount": amount * 100,  # сума в копійках
+        "amount": amount * 100,  # у копійках
         "currency": 980,
         "description": description,
         "orderId": order_id,
@@ -109,13 +112,14 @@ async def create_monopay_invoice(amount: int, description: str, order_id: str) -
         "webHookUrl": f"{WEBHOOK_URL}/monopay_callback",
     }
     async with ClientSession() as session:
-        async with session.post(url, headers=headers, json=data) as response:
-            resp_json = await response.json()
-            if response.status == 200 and ("pageUrl" in resp_json or "invoiceUrl" in resp_json):
+        async with session.post(url, headers=headers, json=data) as resp:
+            resp_json = await resp.json()
+            if resp.status == 200 and ("pageUrl" in resp_json or "invoiceUrl" in resp_json):
                 return resp_json.get("pageUrl") or resp_json.get("invoiceUrl")
             else:
                 logger.error(f"MonoPay invoice creation error: {resp_json}")
                 raise Exception(f"Помилка створення інвойсу MonoPay: {resp_json}")
+
 
 async def save_order_to_sheets(data: dict) -> bool:
     try:
@@ -136,6 +140,7 @@ async def save_order_to_sheets(data: dict) -> bool:
         logger.error(f"Помилка запису в Google Sheets: {e}")
         return False
 
+
 async def get_chat_id_for_order(order_id: str) -> int | None:
     try:
         records = worksheet.get_all_records()
@@ -149,7 +154,8 @@ async def get_chat_id_for_order(order_id: str) -> int | None:
     return None
 
 
-# === НОВИЙ ПОЧАТОК ===
+# --- Telegram handlers ---
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
@@ -158,10 +164,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("Я вже користуюсь сервісом", callback_data="start:existing_client"),
         ]
     ]
-    await update.message.reply_text(
-        "Вітаємо! Оберіть, будь ласка, варіант:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    await update.message.reply_text("Вітаємо! Оберіть, будь ласка, варіант:", reply_markup=InlineKeyboardMarkup(keyboard))
     return START_MENU
 
 
@@ -172,45 +175,29 @@ async def start_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     data = query.data
 
     if data == "start:new_client":
-        # Запускаємо оплату застави 500 грн через MonoPay
         deposit_amount = 500
         order_id = f"deposit_{uuid.uuid4()}"
         context.user_data["deposit_order_id"] = order_id
         context.user_data["is_new_client"] = True
 
-        description = f"Застава за користування Тихою Поличкою"
+        description = "Застава за користування Тихою Поличкою"
         try:
             invoice_url = await create_monopay_invoice(deposit_amount, description, order_id)
             buttons = [[InlineKeyboardButton("Оплатити заставу 500 грн", url=invoice_url)]]
-            await query.edit_message_text(
-                "Будь ласка, сплатіть заставу за посиланням нижче:",
-                reply_markup=InlineKeyboardMarkup(buttons)
-            )
-            # Наступний крок — чекати підтвердження оплати (в ідеалі поки користувач перейде за посиланням)
-            # Для спрощення зараз після кнопки — при повторному натисканні можна додати логіку, або чекати webhook
-            # Тут ви можете порахувати, що замовлення застави оплачене після webhook.
-
-            # Але поки — пропонуємо кнопку "Перейти до вибору локації" (у реальному випадку має бути автоматика)
+            await query.edit_message_text("Будь ласка, сплатіть заставу за посиланням нижче:", reply_markup=InlineKeyboardMarkup(buttons))
             keyboard = [[InlineKeyboardButton("Перейти до вибору локації", callback_data="deposit_done")]]
-            await query.message.reply_text(
-                "Після оплати натисніть кнопку нижче, щоб продовжити:",
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
+            await query.message.reply_text("Після оплати натисніть кнопку нижче, щоб продовжити:", reply_markup=InlineKeyboardMarkup(keyboard))
             return DEPOSIT_PAYMENT
-
         except Exception as e:
             await query.edit_message_text(f"Помилка створення платежу застави: {e}")
             return ConversationHandler.END
 
     elif data == "start:existing_client":
-        # Прямо до вибору локацій
         context.user_data["is_new_client"] = False
-        # Видаляємо це повідомлення і переходьмо до вибору локацій
         await query.edit_message_text("Вітаємо з поверненням! Оберіть локацію:")
         return await show_locations(update, context)
 
     elif data == "deposit_done":
-        # Користувач натиснув кнопку після оплати застави
         await query.edit_message_text("Дякуємо за оплату застави! Оберіть локацію:")
         return await show_locations(update, context)
 
@@ -219,45 +206,184 @@ async def start_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return START_MENU
 
 
-# --- Далі все без змін, але з поправками для оплат днів оренди ---
+async def show_locations(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.callback_query:
+        query = update.callback_query
+        await query.answer()
+        keyboard = get_paginated_buttons(locations, 0, "location", locations_per_page)
+        await query.edit_message_text(
+            "👋 *Оберіть локацію:*",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown",
+        )
+        context.user_data["location_page"] = 0
+        return CHOOSE_LOCATION
+    else:
+        return await start(update, context)
+
+
+async def choose_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+
+    current_page = context.user_data.get("location_page", 0)
+    max_page = (len(locations) - 1) // locations_per_page
+
+    if data == "location_next":
+        next_page = min(current_page + 1, max_page)
+        context.user_data["location_page"] = next_page
+        keyboard = get_paginated_buttons(locations, next_page, "location", locations_per_page)
+        await query.edit_message_text("Оберіть локацію:", reply_markup=InlineKeyboardMarkup(keyboard))
+        return CHOOSE_LOCATION
+    elif data == "location_prev":
+        prev_page = max(current_page - 1, 0)
+        context.user_data["location_page"] = prev_page
+        keyboard = get_paginated_buttons(locations, prev_page, "location", locations_per_page)
+        await query.edit_message_text("Оберіть локацію:", reply_markup=InlineKeyboardMarkup(keyboard))
+        return CHOOSE_LOCATION
+
+    context.user_data["location"] = data.split(":", 1)[1]
+    return await show_genres(update, context)
+
+
+async def show_genres(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.callback_query:
+        query = update.callback_query
+        await query.answer()
+        message_func = query.edit_message_text
+    else:
+        message_func = update.message.reply_text
+
+    keyboard = [[InlineKeyboardButton(genre, callback_data=f"genre:{genre}")] for genre in genres]
+    keyboard.append([InlineKeyboardButton("📚 Показати всі книги", callback_data="genre:all")])
+    keyboard.append([InlineKeyboardButton("🔙 Назад до локацій", callback_data="back:locations")])
+
+    await message_func("Оберіть жанр:", reply_markup=InlineKeyboardMarkup(keyboard))
+    return CHOOSE_GENRE
+
+
+async def choose_genre(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    genre = query.data.split(":", 1)[1]
+
+    if genre == "all":
+        all_books = sum(book_data.values(), [])
+    else:
+        all_books = book_data.get(genre, [])
+
+    if not all_books:
+        await query.edit_message_text("Немає книг у цьому жанрі.")
+        return ConversationHandler.END
+
+    context.user_data["genre"] = genre
+    context.user_data["books"] = all_books
+    context.user_data["book_page"] = 0
+    return await show_books(update, context)
+
+
+async def show_books(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    books = context.user_data.get("books", [])
+    page = context.user_data.get("book_page", 0)
+    start, end = page * books_per_page, (page + 1) * books_per_page
+    page_books = books[start:end]
+
+    buttons = [[InlineKeyboardButton(book["title"], callback_data=f"book:{book['title']}")] for book in page_books]
+    nav = []
+    if start > 0:
+        nav.append(InlineKeyboardButton("⬅️", callback_data="book_prev"))
+    if end < len(books):
+        nav.append(InlineKeyboardButton("➡️", callback_data="book_next"))
+    if nav:
+        buttons.append(nav)
+
+    buttons.append(
+        [InlineKeyboardButton("🔙 До жанрів", callback_data="back:genres"), InlineKeyboardButton("🔙 До локацій", callback_data="back:locations")]
+    )
+    await query.edit_message_text("Оберіть книгу:", reply_markup=InlineKeyboardMarkup(buttons))
+    return SHOW_BOOKS
+
+
+async def book_navigation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    current_page = context.user_data.get("book_page", 0)
+    books = context.user_data.get("books", [])
+    max_page = (len(books) - 1) // books_per_page if books else 0
+
+    if query.data == "book_next":
+        context.user_data["book_page"] = min(current_page + 1, max_page)
+    elif query.data == "book_prev":
+        context.user_data["book_page"] = max(current_page - 1, 0)
+    return await show_books(update, context)
+
+
+async def book_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    title = query.data.split(":", 1)[1]
+    genre = context.user_data.get("genre")
+    books = book_data.get(genre, []) if genre != "all" else sum(book_data.values(), [])
+    book = next((b for b in books if b["title"] == title), None)
+
+    if not book:
+        await query.edit_message_text("Книгу не знайдено.")
+        return SHOW_BOOKS
+
+    context.user_data["book"] = book
+    text = f"*{book['title']}*\n\n{book['desc']}\n\n💸 *Ціна оренди за день*: {book['price']} грн"
+    buttons = [
+        InlineKeyboardButton(f"{d} днів", callback_data=f"days:{d}") for d in rental_days
+    ] + [
+        InlineKeyboardButton("🔙 До книг", callback_data="back:books"),
+        InlineKeyboardButton("🔙 До жанрів", callback_data="back:genres"),
+        InlineKeyboardButton("🔙 До локацій", callback_data="back:locations"),
+    ]
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([buttons]), parse_mode="Markdown")
+    return BOOK_DETAILS
+
 
 async def choose_days(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    # даємо лише 7 та 14 днів (вартість відповідна)
+    # Виводимо тільки 7 та 14 днів і ціни
     buttons = [
         InlineKeyboardButton("7 днів - 70 грн", callback_data="days:7"),
         InlineKeyboardButton("14 днів - 140 грн", callback_data="days:14"),
+        InlineKeyboardButton("🔙 До книг", callback_data="back:books"),
+        InlineKeyboardButton("🔙 До жанрів", callback_data="back:genres"),
+        InlineKeyboardButton("🔙 До локацій", callback_data="back:locations"),
     ]
-    buttons.append(
-        [
-            InlineKeyboardButton("🔙 До книг", callback_data="back:books"),
-            InlineKeyboardButton("🔙 До жанрів", callback_data="back:genres"),
-            InlineKeyboardButton("🔙 До локацій", callback_data="back:locations"),
-        ]
-    )
-    await query.edit_message_text("Оберіть термін оренди:", reply_markup=InlineKeyboardMarkup(buttons))
+    await query.edit_message_text("Оберіть термін оренди:", reply_markup=InlineKeyboardMarkup([buttons]))
     return CHOOSE_RENT_DAYS
 
 
-# Адаптуємо отримання днів оренди з callback, що тепер з двома фіксованими варіантами
 async def choose_days_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await choose_days(update, context)
+
+
+async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["name"] = update.message.text.strip()
+    button = KeyboardButton("📱 Поділитися номером", request_contact=True)
+    reply_markup = ReplyKeyboardMarkup([[button]], one_time_keyboard=True, resize_keyboard=True)
+    await update.message.reply_text("Надішліть ваш номер телефону:", reply_markup=reply_markup)
+    return GET_CONTACT
 
 
 async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     contact = update.message.contact.phone_number if update.message.contact else update.message.text.strip()
     context.user_data["contact"] = contact
     data = context.user_data
+
     data["order_id"] = str(uuid.uuid4())
     data["chat_id"] = update.effective_chat.id
 
-    # Для ціни враховуємо вибраний термін + ціни фіксовані
     days = int(data.get("days", 7))
-    if days not in rental_price_map:
-        days = 7  # default fallback
-    price_per_day = rental_price_map[days]
-    # відкоригуємо ціну книги, бо ми раніше ставили базову ціну 70, а тут формуємо реальну суму
+    price_per_day = rental_price_map.get(days, 70)
+    # Обновляємо ціну книги, щоб уникнути плутанини
     data['book']['price'] = price_per_day
 
     logger.info("Отримане замовлення: %s", pprint.pformat(data))
@@ -284,8 +410,6 @@ async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return CONFIRMATION
 
 
-# --- Інші функції без змін ---
-
 async def confirm_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -301,7 +425,9 @@ async def confirm_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
         invoice_url = await create_monopay_invoice(price_total, description, order_id)
         buttons = [[InlineKeyboardButton("Оплатити MonoPay", url=invoice_url)]]
         await query.edit_message_text(
-            "Будь ласка, оплатіть за посиланням нижче:", reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown"
+            "Будь ласка, оплатіть за посиланням нижче:",
+            reply_markup=InlineKeyboardMarkup(buttons),
+            parse_mode="Markdown",
         )
     except Exception as e:
         logger.error(f"Помилка створення інвойсу MonoPay: {e}")
@@ -321,7 +447,7 @@ async def go_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await show_locations(update, context)
 
 
-# Обробка webhook від MonoPay
+# Webhook від MonoPay
 async def monopay_webhook(request):
     try:
         body = await request.text()
@@ -340,9 +466,7 @@ async def monopay_webhook(request):
 
         chat_id = await get_chat_id_for_order(order_id)
         if payment_status == "PAID" and chat_id:
-            await request.app.bot_updater.bot.send_message(
-                chat_id, f"✅ Оплата замовлення {order_id} успішна! Дякуємо за оренду ☕"
-            )
+            await request.app.bot_updater.bot.send_message(chat_id, f"✅ Оплата замовлення {order_id} успішна! Дякуємо за оренду ☕")
 
         return web.Response(text="OK")
 
@@ -351,7 +475,7 @@ async def monopay_webhook(request):
         return web.Response(text=f"Error: {e}", status=500)
 
 
-# Telegram webhook handler aiohttp
+# Telegram webhook aiohttp
 async def telegram_webhook_handler(request):
     app = request.app
     bot_app = app.bot_updater
@@ -361,7 +485,7 @@ async def telegram_webhook_handler(request):
     return web.Response(text="OK", status=200)
 
 
-# Ініціалізація і запуск aiohttp та Telegram Application
+# Ініціалізація і запуск aiohttp + Telegram Application
 async def init_app():
     application = Application.builder().token(BOT_TOKEN).build()
 
