@@ -76,6 +76,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["location_page"] = 0
     return CHOOSE_LOCATION
 
+
 async def show_locations(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.callback_query:
         query = update.callback_query
@@ -89,7 +90,9 @@ async def show_locations(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["location_page"] = 0
         return CHOOSE_LOCATION
     else:
+        # Якщо виклик не з callback_query
         return await start(update, context)
+
 
 async def choose_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -109,7 +112,10 @@ async def choose_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return CHOOSE_LOCATION
 
     context.user_data["location"] = data.split(":", 1)[1]
+
+    # Показуємо жанри
     return await show_genres(update, context)
+
 
 async def show_genres(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.callback_query:
@@ -125,6 +131,7 @@ async def show_genres(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await message_func("Оберіть жанр:", reply_markup=InlineKeyboardMarkup(keyboard))
     return CHOOSE_GENRE
+
 
 async def choose_genre(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -144,6 +151,7 @@ async def choose_genre(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["books"] = all_books
     context.user_data["book_page"] = 0
     return await show_books(update, context)
+
 
 async def show_books(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -170,6 +178,7 @@ async def show_books(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text("Оберіть книгу:", reply_markup=InlineKeyboardMarkup(buttons))
     return SHOW_BOOKS
 
+
 async def book_navigation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -178,6 +187,7 @@ async def book_navigation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "book_prev":
         context.user_data["book_page"] -= 1
     return await show_books(update, context)
+
 
 async def book_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -202,6 +212,7 @@ async def book_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
     return BOOK_DETAILS
 
+
 async def choose_days(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -209,12 +220,14 @@ async def choose_days(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text("Введіть ваше ім'я:")
     return GET_NAME
 
+
 async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["name"] = update.message.text.strip()
     button = KeyboardButton("📱 Поділитися номером", request_contact=True)
     reply_markup = ReplyKeyboardMarkup([[button]], one_time_keyboard=True, resize_keyboard=True)
     await update.message.reply_text("Надішліть ваш номер телефону:", reply_markup=reply_markup)
     return GET_CONTACT
+
 
 async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     contact = update.message.contact.phone_number if update.message.contact else update.message.text.strip()
@@ -243,11 +256,13 @@ async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup([[button]]), parse_mode="Markdown")
     return CONFIRMATION
 
+
 async def confirm_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     await query.edit_message_text("🎉 Дякуємо за замовлення! Радий бачити вас серед наших читачів ☕")
     return ConversationHandler.END
+
 
 async def go_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -259,6 +274,7 @@ async def go_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await show_books(update, context)
     elif data == "back:locations":
         return await show_locations(update, context)
+
 
 def main():
     app = Application.builder().token(os.getenv("BOT_TOKEN")).build()
@@ -283,19 +299,12 @@ def main():
     )
 
     app.add_handler(conv_handler)
-
-    # ✅ Healthcheck endpoint for Render and UptimeRobot
-    from aiohttp import web
-    async def healthcheck(request):
-        return web.Response(text="Bot is alive!")
-
-    app._web_app.router.add_get("/", healthcheck)
-
     app.run_webhook(
         listen="0.0.0.0",
         port=int(os.getenv("PORT", 8443)),
         webhook_url=os.getenv("WEBHOOK_URL")
     )
+
 
 if __name__ == "__main__":
     main()
