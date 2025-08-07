@@ -371,6 +371,10 @@ async def choose_genre(update: Update, context: ContextTypes.DEFAULT_TYPE):
     genre = query.data.split(":", 1)[1]
     loc = context.user_data.get("location", None)
 
+    # Забороняємо обробку авторів тут, перенаправляємо на choose_author якщо це author:
+    if genre.startswith("author:"):
+        return await choose_author(update, context)
+
     if genre == "all_location":
         loc_book_titles = context.user_data.get("location_books", [])
         if not loc_book_titles:
@@ -821,7 +825,7 @@ async def choose_author(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 raise
         return CHOOSE_GENRE
     else:
-        # Правильна логіка для вибору автора - показуємо книги цього автора
+        # Автор обраний - показати книги автора
         author_name = data.split(":", 1)[1]
         books_by_author = author_to_books.get(author_name, [])
 
@@ -829,113 +833,12 @@ async def choose_author(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(f"Книг автора \"{author_name}\" наразі немає.")
             return CHOOSE_GENRE
 
-        context.user_data["genre"] = f"author:{author_name}"
+        context.user_data["genre"] = f"author:{author_name}"  # Позначка, що це автор
         context.user_data["books"] = books_by_author
         context.user_data["book_page"] = 0
         context.user_data["author_name"] = author_name
 
         return await show_books(update, context)
-
-
-async def init_app():
-
-    load_data_from_google_sheet()
-
-    application = Application.builder().token(BOT_TOKEN).build()
-
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
-        states={
-            START_MENU: [
-                CallbackQueryHandler(start_menu_handler, pattern=r"^(all_books|all_authors)$"),
-            ],
-            CHOOSE_LOCATION: [
-                CallbackQueryHandler(choose_location, pattern=r"^location.*"),
-                CallbackQueryHandler(start_menu_handler, pattern=r"^(all_books|all_authors)$"),
-                CallbackQueryHandler(go_back, pattern=r"^back:(start|locations)$"),
-            ],
-            CHOOSE_GENRE: [
-                CallbackQueryHandler(choose_genre, pattern=r"^(genre:.*|author:.*)"),
-                CallbackQueryHandler(choose_author, pattern=r"^author.*"),
-                CallbackQueryHandler(go_back, pattern=r"^back:(locations|start|genres)$"),
-            ],
-            SHOW_BOOKS: [
-                CallbackQueryHandler(book_navigation, pattern=r"^book_(next|prev)$"),
-                CallbackQueryHandler(book_detail, pattern=r"^book:.*"),
-                CallbackQueryHandler(go_back, pattern=r"^back:(genres|locations|start)$"),
-            ],
-            BOOK_DETAILS: [
-                CallbackQueryHandler(days_chosen, pattern=r"^days:\d+$"),
-                CallbackQueryHandler(go_back, pattern=r"^back:(books|genres|locations|start)$"),
-            ],
-            CHOOSE_RENT_DAYS: [
-            ],
-            GET_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_name)],
-            GET_CONTACT: [MessageHandler(filters.CONTACT | filters.TEXT, get_contact)],
-            CONFIRMATION: [
-                CallbackQueryHandler(confirm_payment, pattern=r"^pay_now$"),
-                CallbackQueryHandler(go_back, pattern=r"^back:start$"),
-            ],
-        },
-        fallbacks=[CommandHandler("cancel", lambda update, context: update.message.reply_text("❌ Скасовано."))],
-    )
-
-    application.add_handler(conv_handler)
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("reload", reload_data))
-
-    await application.initialize()
-    await application.start()
-
-    app = web.Application()
-    app.router.add_get("/", lambda request: web.Response(text="OK", status=200))
-    app.router.add_post("/telegram_webhook", telegram_webhook_handler)
-    app.router.add_post("/monopay_callback", monopay_webhook)
-
-    app.bot_updater = application
-
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", PORT)
-    await site.start()
-
-    await application.bot.set_webhook(f"{WEBHOOK_URL.rstrip('/')}/telegram_webhook")
-
-    logger.info(f"Server started on port {PORT}")
-    logger.info(f"Telegram webhook set to {WEBHOOK_URL.rstrip('/')}/telegram_webhook")
-
-    return app, application
-
-
-async def monopay_webhook(request):
-    try:
-        body = await request.text()
-        data = json.loads(body)
-        signature = request.headers.get("X-Signature-MonoPay")
-        if MONOPAY_WEBHOOK_SECRET and signature:
-            computed_signature = hmac.new(MONOPAY_WEBHOOK_SECRET.encode(), body.encode(), hashlib.sha256).hexdigest()
-            if not hmac.compare_digest(computed_signature, signature):
-                logger.warning("Invalid MonoPay webhook signature")
-                return web.Response(text="Invalid signature", status=403)
-        order_id = data.get("orderId")
-        payment_status = data.get("status")
-        logger.info(f"MonoPay webhook received: orderId={order_id}, status={payment_status}")
-        chat_id = await get_chat_id_for_order(order_id)
-        if payment_status == "PAID" and chat_id:
-            await request.app.bot_updater.bot.send_message(chat_id, f"✅ Оплата замовлення {order_id} успішна! Дякуємо за оренду ☕")
-        return web.Response(text="OK")
-    except Exception as e:
-        logger.exception("Error in MonoPay webhook:")
-        return web.Response(text=f"Error: {e}", status=500)
-
-
-async def telegram_webhook_handler(request):
-    app = request.app
-    bot_app = app.bot_updater
-    body = await request.text()
-    update = Update.de_json(json.loads(body), bot_app.bot)
-    await bot_app.process_update(update)
-    return web.Response(text="OK", status=200)
 
 
 if __name__ == "__main__":
