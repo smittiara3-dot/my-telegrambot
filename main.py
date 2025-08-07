@@ -62,9 +62,13 @@ gc.session = AuthorizedSession(credentials)
 books_per_page = 10
 locations_per_page = 10
 
-locations = []
-genres = []
-book_data = {}
+locations = []          # список назв локацій
+genres = []             # список жанрів
+authors = []            # список авторів для меню авторів
+book_data = {}          # жанр → список книг (dict з title, desc, author, price_7, price_14)
+book_to_locations = {}  # назва книги → список локацій
+location_to_books = {}  # назва локації → список назв книг
+author_to_books = {}    # автор → список книг
 rental_price_map = {}
 
 def get_paginated_buttons(items, page, prefix, page_size, add_start_button=False):
@@ -140,25 +144,61 @@ async def get_chat_id_for_order(order_id: str) -> int | None:
 
 def load_data_from_google_sheet():
     global locations, genres, book_data, rental_price_map
+    global book_to_locations, location_to_books, authors, author_to_books
+
     sh = gc.open_by_key(GOOGLE_SHEET_ID_LOCATIONS)
     worksheet = sh.sheet1
     records = worksheet.get_all_records()
     df = pd.DataFrame(records)
+
     locations = sorted(df['location'].dropna().unique().tolist())
     genres = sorted(df['genre'].dropna().unique().tolist())
+
+    # Зчитуємо авторів, непорожні в полі "author", унікально
+    authors_raw = df['author'].dropna().unique()
+    authors = sorted([a.strip() for a in authors_raw if a.strip()])
+
     book_data.clear()
+    book_to_locations.clear()
+    location_to_books.clear()
+    author_to_books.clear()
+
     for genre in genres:
         books = []
         df_genre = df[df['genre'] == genre]
         for _, row in df_genre.iterrows():
+            author = row.get('author', '').strip() if row.get('author') else ''
             book = {
                 "title": row['title'],
                 "desc": row['desc'],
+                "author": author,
                 "price_7": row.get('price_7', 70),
                 "price_14": row.get('price_14', 140),
             }
             books.append(book)
+
+            # book to locations
+            if book["title"] not in book_to_locations:
+                book_to_locations[book["title"]] = []
+            if row['location'] not in book_to_locations[book["title"]]:
+                book_to_locations[book["title"]].append(row['location'])
+
+            # location to books
+            loc = row['location']
+            if loc not in location_to_books:
+                location_to_books[loc] = []
+            if book["title"] not in location_to_books[loc]:
+                location_to_books[loc].append(book["title"])
+
+            # author to books
+            if author:
+                if author not in author_to_books:
+                    author_to_books[author] = []
+                if book["title"] not in author_to_books[author]:
+                    author_to_books[author].append(book)
+
         book_data[genre] = books
+
     if not df.empty:
         rental_price_map = {
             7: int(df.iloc[0].get('price_7', 70)),
@@ -166,9 +206,13 @@ def load_data_from_google_sheet():
         }
     else:
         rental_price_map = {7: 70, 14: 140}
-    logger.info(f"Дані завантажено: {len(locations)} локацій, {len(genres)} жанрів.")
 
-# Команда /reload — оновлення даних вручну
+    logger.info(f"Дані завантажено: {len(locations)} локацій, {len(genres)} жанрів, {len(authors)} авторів.")
+    logger.info(f"Зв’язки book_to_locations: {len(book_to_locations)} книг.")
+    logger.info(f"Зв’язки location_to_books: {len(location_to_books)} локацій.")
+    logger.info(f"Зв’язки author_to_books: {len(author_to_books)} авторів.")
+
+# --- Команда /reload ---
 async def reload_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         load_data_from_google_sheet()
@@ -178,6 +222,7 @@ async def reload_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Помилка оновлення даних з Google Sheets: {e}", exc_info=True)
         await update.message.reply_text("Сталася помилка при оновленні даних. Спробуйте пізніше.")
 
+# --- стартове меню ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     try:
@@ -190,28 +235,33 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [
             InlineKeyboardButton("Я новий клієнт", callback_data="start:new_client"),
             InlineKeyboardButton("Я вже користуюсь сервісом", callback_data="start:existing_client"),
-        ]
+        ],
+        [InlineKeyboardButton("📚 Показати всі книжки", callback_data="all_books")],
+        [InlineKeyboardButton("👩‍💼 Показати книги за автором", callback_data="all_authors")],
     ]
+
     if update.message:
         await update.message.reply_text(
-            "Вітаємо! Оберіть, будь ласка, варіант:", reply_markup=InlineKeyboardMarkup(keyboard)
+            "Вітаємо! Оберіть, будь ласка, варіант або додаткові опції:", reply_markup=InlineKeyboardMarkup(keyboard)
         )
     elif update.callback_query:
         await update.callback_query.answer()
         try:
             await update.callback_query.edit_message_text(
-                "Вітаємо! Оберіть, будь ласка, варіант:", reply_markup=InlineKeyboardMarkup(keyboard)
+                "Вітаємо! Оберіть, будь ласка, варіант або додаткові опції:", reply_markup=InlineKeyboardMarkup(keyboard)
             )
         except BadRequest as e:
             if "Message is not modified" not in str(e):
                 raise
     return START_MENU
 
+# --- обробка вибору стартового меню ---
 async def start_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
 
+    # Логіка для старих варіантів залишена без змін...
     if data == "start:new_client":
         deposit_amount = 500
         order_id = f"deposit_{uuid.uuid4()}"
@@ -241,8 +291,10 @@ async def start_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         context.user_data["is_new_client"] = False
         try:
             keyboard = get_paginated_buttons(locations, 0, "location", locations_per_page, add_start_button=True)
+            keyboard.append([InlineKeyboardButton("📚 Показати всі книжки", callback_data="all_books")])
+            keyboard.append([InlineKeyboardButton("👩‍💼 Показати книги за автором", callback_data="all_authors")])
             await query.edit_message_text(
-                "Вітаємо з поверненням! Оберіть локацію:",
+                "Вітаємо з поверненням! Оберіть локацію або дивіться книги або авторів:",
                 reply_markup=InlineKeyboardMarkup(keyboard),
             )
         except BadRequest as e:
@@ -254,8 +306,10 @@ async def start_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     elif data == "deposit_done":
         try:
             keyboard = get_paginated_buttons(locations, 0, "location", locations_per_page, add_start_button=True)
+            keyboard.append([InlineKeyboardButton("📚 Показати всі книжки", callback_data="all_books")])
+            keyboard.append([InlineKeyboardButton("👩‍💼 Показати книги за автором", callback_data="all_authors")])
             await query.edit_message_text(
-                "Дякуємо за оплату застави! Оберіть локацію:",
+                "Дякуємо за оплату застави! Оберіть локацію або дивіться книги або авторів:",
                 reply_markup=InlineKeyboardMarkup(keyboard),
             )
         except BadRequest as e:
@@ -276,28 +330,75 @@ async def start_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
             [
                 InlineKeyboardButton("Я новий клієнт", callback_data="start:new_client"),
                 InlineKeyboardButton("Я вже користуюсь сервісом", callback_data="start:existing_client"),
-            ]
+            ],
+            [InlineKeyboardButton("📚 Показати всі книжки", callback_data="all_books")],
+            [InlineKeyboardButton("👩‍💼 Показати книги за автором", callback_data="all_authors")],
         ]
         try:
             await query.edit_message_text(
-                "Вітаємо! Оберіть, будь ласка, варіант:", reply_markup=InlineKeyboardMarkup(keyboard)
+                "Вітаємо! Оберіть, будь ласка, варіант або додаткові опції:", reply_markup=InlineKeyboardMarkup(keyboard)
             )
         except BadRequest as e:
             if "Message is not modified" not in str(e):
                 raise
         return START_MENU
 
+    elif data == "all_books":
+        # Формуємо список усіх книг з унікальними заголовками
+        all_books_titles = []
+        for genre_books in book_data.values():
+            for book in genre_books:
+                if book["title"] not in all_books_titles:
+                    all_books_titles.append(book["title"])
+        if not all_books_titles:
+            await query.edit_message_text("Поки що немає доступних книг.")
+            return START_MENU
+
+        books_all = []
+        for genre_books in book_data.values():
+            books_all.extend(genre_books)
+
+        unique_books = {}
+        for b in books_all:
+            unique_books[b["title"]] = b
+
+        context.user_data["books"] = list(unique_books.values())
+        context.user_data["genre"] = "all"
+        context.user_data["book_page"] = 0
+
+        return await show_books(update, context)
+
+    elif data == "all_authors":
+        # Виводимо список авторів для вибору
+        if not authors:
+            await query.edit_message_text("Поки що немає авторів у системі.")
+            return START_MENU
+
+        keyboard = get_paginated_buttons(authors, 0, "author", books_per_page)
+        keyboard.append([InlineKeyboardButton("🏠 На початок", callback_data="back:start")])
+
+        try:
+            await query.edit_message_text("Оберіть автора:", reply_markup=InlineKeyboardMarkup(keyboard))
+        except BadRequest as e:
+            if "Message is not modified" not in str(e):
+                raise
+        context.user_data["author_page"] = 0
+        return "CHOOSE_AUTHOR"  # новий стан
+
     else:
         await query.answer("Невідома дія")
         return START_MENU
 
+# --- меню вибору локацій ---
 async def show_locations(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     keyboard = get_paginated_buttons(locations, 0, "location", locations_per_page, add_start_button=True)
+    keyboard.append([InlineKeyboardButton("📚 Показати всі книжки", callback_data="all_books")])
+    keyboard.append([InlineKeyboardButton("👩‍💼 Показати книги за автором", callback_data="all_authors")])
     try:
         await query.edit_message_text(
-            "👋 *Оберіть локацію:*",
+            "👋 *Оберіть локацію або дивіться книги/авторів:*",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode="Markdown",
         )
@@ -307,6 +408,7 @@ async def show_locations(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["location_page"] = 0
     return CHOOSE_LOCATION
 
+# --- вибір локації ---
 async def choose_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -318,8 +420,10 @@ async def choose_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
         next_page = min(current_page + 1, max_page)
         context.user_data["location_page"] = next_page
         keyboard = get_paginated_buttons(locations, next_page, "location", locations_per_page, add_start_button=True)
+        keyboard.append([InlineKeyboardButton("📚 Показати всі книжки", callback_data="all_books")])
+        keyboard.append([InlineKeyboardButton("👩‍💼 Показати книги за автором", callback_data="all_authors")])
         try:
-            await query.edit_message_text("Оберіть локацію:", reply_markup=InlineKeyboardMarkup(keyboard))
+            await query.edit_message_text("Оберіть локацію або дивіться книги/авторів:", reply_markup=InlineKeyboardMarkup(keyboard))
         except BadRequest as e:
             if "Message is not modified" not in str(e):
                 raise
@@ -329,52 +433,187 @@ async def choose_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
         prev_page = max(current_page - 1, 0)
         context.user_data["location_page"] = prev_page
         keyboard = get_paginated_buttons(locations, prev_page, "location", locations_per_page, add_start_button=True)
+        keyboard.append([InlineKeyboardButton("📚 Показати всі книжки", callback_data="all_books")])
+        keyboard.append([InlineKeyboardButton("👩‍💼 Показати книги за автором", callback_data="all_authors")])
         try:
-            await query.edit_message_text("Оберіть локацію:", reply_markup=InlineKeyboardMarkup(keyboard))
+            await query.edit_message_text("Оберіть локацію або дивіться книги/авторів:", reply_markup=InlineKeyboardMarkup(keyboard))
         except BadRequest as e:
             if "Message is not modified" not in str(e):
                 raise
         return CHOOSE_LOCATION
 
-    context.user_data["location"] = data.split(":", 1)[1]
-    return await show_genres(update, context)
+    loc_selected = data.split(":", 1)[1]
+    context.user_data["location"] = loc_selected
 
-async def show_genres(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    loc_books_titles = location_to_books.get(loc_selected, [])
+
+    if not loc_books_titles:
+        await query.edit_message_text(f"На локації \"{loc_selected}\" наразі немає доступних книг.")
+        return CHOOSE_LOCATION
+
+    genres_in_location_set = set()
+    for genre, books in book_data.items():
+        titles = [b['title'] for b in books]
+        for t in loc_books_titles:
+            if t in titles:
+                genres_in_location_set.add(genre)
+    genres_in_location = sorted(genres_in_location_set)
+
+    context.user_data["location_genres"] = genres_in_location
+    context.user_data["location_books"] = loc_books_titles
+
+    return await show_genres_for_location(update, context)
+
+async def show_genres_for_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    keyboard = [[InlineKeyboardButton(genre, callback_data=f"genre:{genre}")] for genre in genres]
-    keyboard.append([InlineKeyboardButton("📚 Показати всі книги", callback_data="genre:all")])
+    genres_loc = context.user_data.get("location_genres", [])
+    loc = context.user_data.get("location", "")
+
+    if not genres_loc:
+        await query.edit_message_text(f"На локації \"{loc}\" немає доступних жанрів.")
+        return CHOOSE_LOCATION
+
+    keyboard = [[InlineKeyboardButton(genre, callback_data=f"genre:{genre}")] for genre in genres_loc]
+    keyboard.append([InlineKeyboardButton("📚 Показати всі книги на локації", callback_data="genre:all_location")])
     keyboard.append(
         [InlineKeyboardButton("🔙 Назад до локацій", callback_data="back:locations"),
          InlineKeyboardButton("🏠 На початок", callback_data="back:start")]
     )
-    try:
-        await query.edit_message_text("Оберіть жанр:", reply_markup=InlineKeyboardMarkup(keyboard))
-    except BadRequest as e:
-        if "Message is not modified" not in str(e):
-            raise
+
+    await query.edit_message_text(
+        f"Оберіть жанр в локації \"{loc}\":",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
     return CHOOSE_GENRE
 
+# --- меню вибору авторів ---
+async def choose_author(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    current_page = context.user_data.get("author_page", 0)
+    max_page = (len(authors) - 1) // books_per_page
+
+    if data == "author_next":
+        next_page = min(current_page + 1, max_page)
+        context.user_data["author_page"] = next_page
+        keyboard = get_paginated_buttons(authors, next_page, "author", books_per_page, add_start_button=True)
+        try:
+            await query.edit_message_text("Оберіть автора:", reply_markup=InlineKeyboardMarkup(keyboard))
+        except BadRequest as e:
+            if "Message is not modified" not in str(e):
+                raise
+        return "CHOOSE_AUTHOR"
+    elif data == "author_prev":
+        prev_page = max(current_page - 1, 0)
+        context.user_data["author_page"] = prev_page
+        keyboard = get_paginated_buttons(authors, prev_page, "author", books_per_page, add_start_button=True)
+        try:
+            await query.edit_message_text("Оберіть автора:", reply_markup=InlineKeyboardMarkup(keyboard))
+        except BadRequest as e:
+            if "Message is not modified" not in str(e):
+                raise
+        return "CHOOSE_AUTHOR"
+    else:
+        # обрано автора
+        author_name = data.split(":", 1)[1]
+        books_by_author = author_to_books.get(author_name, [])
+        if not books_by_author:
+            await query.edit_message_text(f"Книг автора \"{author_name}\" наразі немає.")
+            return "CHOOSE_AUTHOR"
+
+        context.user_data["genre"] = f"author:{author_name}"
+        context.user_data["books"] = books_by_author
+        context.user_data["book_page"] = 0
+        context.user_data["author_name"] = author_name
+        return await show_books(update, context)
+
+# --- Оновлений choose_genre з підтримкою "all_location" ---
 async def choose_genre(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     genre = query.data.split(":", 1)[1]
-    if genre == "all":
-        all_books = sum(book_data.values(), [])
-    else:
-        all_books = book_data.get(genre, [])
-    if not all_books:
-        try:
-            await query.edit_message_text("Немає книг у цьому жанрі.")
-        except BadRequest as e:
-            if "Message is not modified" not in str(e):
-                raise
-        return ConversationHandler.END
 
-    context.user_data["genre"] = genre
-    context.user_data["books"] = all_books
-    context.user_data["book_page"] = 0
-    return await show_books(update, context)
+    if genre == "all":
+        # всі книги по всіх жанрах
+        books_all = []
+        for genre_books in book_data.values():
+            books_all.extend(genre_books)
+        if not books_all:
+            await query.edit_message_text("Поки що немає доступних книг.")
+            return ConversationHandler.END
+
+        unique_books = {}
+        for b in books_all:
+            unique_books[b["title"]] = b
+
+        context.user_data["books"] = list(unique_books.values())
+        context.user_data["genre"] = "all"
+        context.user_data["book_page"] = 0
+        return await show_books(update, context)
+
+    elif genre == "all_location":
+        loc = context.user_data.get("location", "")
+        loc_book_titles = context.user_data.get("location_books", [])
+        if not loc_book_titles:
+            await query.edit_message_text(f"На локації \"{loc}\" немає доступних книг.")
+            return ConversationHandler.END
+
+        books_list = []
+        added_titles = set()
+        for genre_books in book_data.values():
+            for b in genre_books:
+                if b["title"] in loc_book_titles and b["title"] not in added_titles:
+                    books_list.append(b)
+                    added_titles.add(b["title"])
+
+        if not books_list:
+            await query.edit_message_text(f"На локації \"{loc}\" немає доступних книг.")
+            return ConversationHandler.END
+
+        context.user_data["genre"] = "all_location"
+        context.user_data["books"] = books_list
+        context.user_data["book_page"] = 0
+
+        return await show_books(update, context)
+
+    else:
+        loc = context.user_data.get("location", None)
+        if loc:
+            loc_books_titles = location_to_books.get(loc, [])
+            genre_books = book_data.get(genre, [])
+
+            filtered_books = [b for b in genre_books if b["title"] in loc_books_titles]
+
+            if not filtered_books:
+                try:
+                    await query.edit_message_text("Немає книг у цьому жанрі на цій локації.")
+                except BadRequest as e:
+                    if "Message is not modified" not in str(e):
+                        raise
+                return ConversationHandler.END
+
+            context.user_data["genre"] = genre
+            context.user_data["books"] = filtered_books
+            context.user_data["book_page"] = 0
+
+            return await show_books(update, context)
+        else:
+            genre_books = book_data.get(genre, [])
+            if not genre_books:
+                try:
+                    await query.edit_message_text("Немає книг у цьому жанрі.")
+                except BadRequest as e:
+                    if "Message is not modified" not in str(e):
+                        raise
+                return ConversationHandler.END
+
+            context.user_data["genre"] = genre
+            context.user_data["books"] = genre_books
+            context.user_data["book_page"] = 0
+
+            return await show_books(update, context)
 
 async def show_books(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -383,7 +622,16 @@ async def show_books(update: Update, context: ContextTypes.DEFAULT_TYPE):
     page = context.user_data.get("book_page", 0)
     start, end = page * books_per_page, (page + 1) * books_per_page
     page_books = books[start:end]
-    buttons = [[InlineKeyboardButton(book["title"], callback_data=f"book:{book['title']}")] for book in page_books]
+    buttons = []
+
+    for book in page_books:
+        # Виводимо автора поруч із назвою книги
+        author = book.get("author", "")
+        title_text = f"{book['title']}"
+        if author:
+            title_text += f" ({author})"
+        buttons.append(InlineKeyboardButton(title_text, callback_data=f"book:{book['title']}"))
+
     nav = []
     if start > 0:
         nav.append(InlineKeyboardButton("⬅️", callback_data="book_prev"))
@@ -399,7 +647,7 @@ async def show_books(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
     )
     try:
-        await query.edit_message_text("Оберіть книгу:", reply_markup=InlineKeyboardMarkup(buttons))
+        await query.edit_message_text("Оберіть книгу:", reply_markup=InlineKeyboardMarkup([buttons]))
     except BadRequest as e:
         if "Message is not modified" not in str(e):
             raise
@@ -422,11 +670,13 @@ async def book_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     title = query.data.split(":", 1)[1]
     genre = context.user_data.get("genre")
-    if genre == "all":
-        books = sum(book_data.values(), [])
+
+    if genre == "all" or genre == "all_location" or (genre and genre.startswith("author:")):
+        book = next((b for b in context.user_data.get("books", []) if b["title"] == title), None)
     else:
-        books = book_data.get(genre, [])
-    book = next((b for b in books if b["title"] == title), None)
+        books_list = book_data.get(genre, [])
+        book = next((b for b in books_list if b["title"] == title), None)
+
     if not book:
         try:
             await query.edit_message_text("Книгу не знайдено.")
@@ -436,12 +686,27 @@ async def book_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return SHOW_BOOKS
 
     context.user_data["book"] = book
+
+    desc = book.get('desc', '')
+    MAX_DESC_LENGTH = 3000
+    if len(desc) > MAX_DESC_LENGTH:
+        desc = desc[:MAX_DESC_LENGTH] + "..."
+
+    locs = book_to_locations.get(book['title'], [])
+    locations_list_str = ", ".join(locs) if locs else "Невідомо"
+
+    author = book.get("author", "")
+    author_str = f"\n👤 Автор: {author}" if author else ""
+
     text = (
-        f"*{book['title']}*\n\n{book['desc']}\n\n"
+        f"*{book['title']}*{author_str}\n\n"
+        f"{desc}\n\n"
+        f"📍 Доступна на локаціях: {locations_list_str}\n\n"
         f"💸 *Ціна оренди:*\n"
-        f"7 днів — {book.get('price_7', rental_price_map.get(7,70))} грн\n"
-        f"14 днів — {book.get('price_14', rental_price_map.get(14,140))} грн"
+        f"7 днів — {book.get('price_7', rental_price_map.get(7, 70))} грн\n"
+        f"14 днів — {book.get('price_14', rental_price_map.get(14, 140))} грн"
     )
+
     buttons = [
         InlineKeyboardButton("7 днів", callback_data="days:7"),
         InlineKeyboardButton("14 днів", callback_data="days:14"),
@@ -456,6 +721,8 @@ async def book_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if "Message is not modified" not in str(e):
             raise
     return BOOK_DETAILS
+
+# Решта функцій залишаємо без змін (choose_days, days_chosen, get_name, get_contact, confirm_payment, go_back, monopay_webhook, telegram_webhook_handler)
 
 async def choose_days(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -563,7 +830,13 @@ async def go_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data
     if data == "back:genres":
-        return await show_genres(update, context)
+        if context.user_data.get("location"):
+            return await show_genres_for_location(update, context)
+        elif context.user_data.get("author_name"):
+            # Якщо був вибір автора, повернутися до списку авторів
+            return await choose_author(update, context)
+        else:
+            return await show_genres(update, context)
     elif data == "back:books":
         return await show_books(update, context)
     elif data == "back:locations":
@@ -580,17 +853,20 @@ async def go_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [
                 InlineKeyboardButton("Я новий клієнт", callback_data="start:new_client"),
                 InlineKeyboardButton("Я вже користуюсь сервісом", callback_data="start:existing_client"),
-            ]
+            ],
+            [InlineKeyboardButton("📚 Показати всі книжки", callback_data="all_books")],
+            [InlineKeyboardButton("👩‍💼 Показати книги за автором", callback_data="all_authors")],
         ]
         try:
             await query.edit_message_text(
-                "Вітаємо! Оберіть, будь ласка, варіант:", reply_markup=InlineKeyboardMarkup(keyboard)
+                "Вітаємо! Оберіть, будь ласка, варіант або додаткові опції:", reply_markup=InlineKeyboardMarkup(keyboard)
             )
         except BadRequest as e:
             if "Message is not modified" not in str(e):
                 raise
         return START_MENU
 
+# --- Webhook handlers ---
 async def monopay_webhook(request):
     try:
         body = await request.text()
@@ -620,6 +896,7 @@ async def telegram_webhook_handler(request):
     await bot_app.process_update(update)
     return web.Response(text="OK", status=200)
 
+# --- init app ---
 async def init_app():
     global locations, genres, book_data, rental_price_map
 
@@ -631,7 +908,7 @@ async def init_app():
         entry_points=[CommandHandler("start", start)],
         states={
             START_MENU: [
-                CallbackQueryHandler(start_menu_handler, pattern=r"^start:.*"),
+                CallbackQueryHandler(start_menu_handler, pattern=r"^(start:.*|all_books|all_authors)$"),
                 CallbackQueryHandler(go_back, pattern=r"^back:start$"),
             ],
             DEPOSIT_PAYMENT: [
@@ -641,6 +918,7 @@ async def init_app():
             CHOOSE_LOCATION: [
                 CallbackQueryHandler(choose_location, pattern=r"^location.*"),
                 CallbackQueryHandler(go_back, pattern=r"^back:start$"),
+                CallbackQueryHandler(start_menu_handler, pattern=r"^(all_books|all_authors)$"),
             ],
             CHOOSE_GENRE: [
                 CallbackQueryHandler(choose_genre, pattern=r"^genre:.*"),
@@ -663,6 +941,10 @@ async def init_app():
             GET_CONTACT: [MessageHandler(filters.CONTACT | filters.TEXT, get_contact)],
             CONFIRMATION: [
                 CallbackQueryHandler(confirm_payment, pattern=r"^pay_now$"),
+                CallbackQueryHandler(go_back, pattern=r"^back:start$"),
+            ],
+            "CHOOSE_AUTHOR": [
+                CallbackQueryHandler(choose_author, pattern=r"^author.*"),
                 CallbackQueryHandler(go_back, pattern=r"^back:start$"),
             ],
         },
@@ -693,6 +975,7 @@ async def init_app():
     logger.info(f"Telegram webhook set to {WEBHOOK_URL.rstrip('/')}/telegram_webhook")
 
     return app, application
+
 
 if __name__ == "__main__":
     loop = asyncio.new_event_loop()
