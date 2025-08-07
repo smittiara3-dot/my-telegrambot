@@ -508,7 +508,7 @@ async def book_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 raise
         return SHOW_BOOKS
 
-    genre = context.user_data.get("genre")
+    genre = context.user_data.get("genre", "")
 
     current_books = context.user_data.get("books", [])
     book = next((b for b in current_books if b["title"] == book_title), None)
@@ -821,7 +821,7 @@ async def choose_author(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 raise
         return CHOOSE_GENRE
     else:
-        # Виправлення логіки: спочатку обробляємо вибір автора та формуємо список книг цього автора
+        # Правильна логіка для вибору автора - показуємо книги цього автора
         author_name = data.split(":", 1)[1]
         books_by_author = author_to_books.get(author_name, [])
 
@@ -829,13 +829,11 @@ async def choose_author(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(f"Книг автора \"{author_name}\" наразі немає.")
             return CHOOSE_GENRE
 
-        # Встановимо genre як "author:<author_name>" для унікальності
         context.user_data["genre"] = f"author:{author_name}"
         context.user_data["books"] = books_by_author
         context.user_data["book_page"] = 0
         context.user_data["author_name"] = author_name
 
-        # Переходимо до показу книг (як при виборі жанру)
         return await show_books(update, context)
 
 
