@@ -85,9 +85,8 @@ def get_paginated_buttons(items, page, prefix, page_size, add_start_button=False
         buttons.append([InlineKeyboardButton("🏠 На початок", callback_data="back:start")])
     return buttons
 
-# --- MOD: Новий функція для формування безпечного callback_data для книги ---
 def make_book_callback_data(title: str) -> str:
-    h = hashlib.sha256(title.encode('utf-8')).hexdigest()[:16]  # 16 символів хешу
+    h = hashlib.sha256(title.encode('utf-8')).hexdigest()[:16]
     return f"book:{h}"
 
 async def create_monopay_invoice(amount: int, description: str, order_id: str) -> str:
@@ -116,9 +115,16 @@ async def create_monopay_invoice(amount: int, description: str, order_id: str) -
 async def save_order_to_sheets(data: dict) -> bool:
     try:
         worksheet = gc.open_by_key(GOOGLE_SHEET_ID_ORDERS).sheet1
+        # Якщо у data немає 'location', передати інформацію зі звʼязаних локацій книги або порожній рядок
+        location_str = data.get("location")
+        if not location_str:
+            # Якщо 'book' є, отримуємо список локацій з map
+            book_title = data.get("book", {}).get("title", "")
+            locs = book_to_locations.get(book_title, [])
+            location_str = ", ".join(locs) if locs else ""
         worksheet.append_row(
             [
-                data.get("location", ""),
+                location_str,
                 data.get("genre", ""),
                 data.get("book", {}).get("title", ""),
                 data.get("days", ""),
@@ -220,8 +226,6 @@ async def reload_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Помилка оновлення даних з Google Sheets: {e}", exc_info=True)
         await update.message.reply_text("Сталася помилка при оновленні даних. Спробуйте пізніше.")
-
-# --- Зміни у старті ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
@@ -412,7 +416,6 @@ async def choose_genre(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_books(update, context)
         return SHOW_BOOKS
 
-# --- MOD: show_books з використанням хешів для callback_data ---
 async def show_books(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -422,7 +425,6 @@ async def show_books(update: Update, context: ContextTypes.DEFAULT_TYPE):
     page_books = books[start:end]
     buttons = []
 
-    # Створюємо map hash -> book title
     book_hash_map = {}
     for book in page_books:
         book_title = book['title']
@@ -471,7 +473,6 @@ async def book_navigation(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["book_page"] = max(current_page - 1, 0)
     return await show_books(update, context)
 
-# --- MOD: обробка book_detail по хешу з context.user_data['book_hash_map'] ---
 async def book_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -489,12 +490,10 @@ async def book_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     genre = context.user_data.get("genre")
 
-    # Знаходимо книгу за назвою в поточному списку книг
     current_books = context.user_data.get("books", [])
     book = next((b for b in current_books if b["title"] == book_title), None)
 
     if not book:
-        # Шукаємо у загальній базі book_data
         if genre in ["all", "all_location"]:
             for g_books in book_data.values():
                 candidate = next((b for b in g_books if b["title"] == book_title), None)
@@ -515,8 +514,12 @@ async def book_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data["book"] = book
 
+    locations_for_book = book_to_locations.get(book_title, [])
+    loc_text = ", ".join(locations_for_book) if locations_for_book else "Локація не вказана"
+
     text = (
-        "О, чудовий вибір! Ця книга — справжня перлина \n"
+        f"О, чудовий вибір! Ця книга — справжня перлина \n"
+        f"Вона доступна на поличках: {loc_text}\n\n"
         "Вона знайшла тебе не випадково. Хай читається легко, а думки розпускаються, як чай у теплій чашці."
     )
 
@@ -534,8 +537,6 @@ async def book_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if "Message is not modified" not in str(e):
             raise
     return BOOK_DETAILS
-
-# --- Далі код без змін ---
 
 async def choose_days(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -585,7 +586,18 @@ async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     contact = update.message.contact.phone_number if update.message.contact else update.message.text.strip()
     context.user_data["contact"] = contact
+
     data = context.user_data
+
+    # Забираємо локацію з user_data, якщо немає - формуємо список з локацій книги
+    location = data.get("location")
+    if not location:
+        book_title = data.get("book", {}).get("title", "")
+        locations_list = book_to_locations.get(book_title, [])
+        location = ", ".join(locations_list) if locations_list else ""
+
+    data["location"] = location
+
     data["order_id"] = str(uuid.uuid4())
     data["chat_id"] = update.effective_chat.id
 
@@ -737,7 +749,7 @@ async def start_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if "Message is not modified" not in str(e):
                 raise
         context.user_data["author_page"] = 0
-        return CHOOSE_GENRE 
+        return CHOOSE_GENRE
 
     else:
         await query.answer("Невідома дія")
