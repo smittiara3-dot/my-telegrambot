@@ -33,7 +33,10 @@ MONOPAY_WEBHOOK_SECRET = os.getenv("MONOPAY_WEBHOOK_SECRET", None)
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # без кінцевого слеша
 PORT = int(os.getenv("PORT", 8443))
 
-GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
+# Окремі Google Sheet ID для локацій/книг та для замовлень
+GOOGLE_SHEET_ID_LOCATIONS = os.getenv("GOOGLE_SHEET_ID_LOCATIONS")
+GOOGLE_SHEET_ID_ORDERS = os.getenv("GOOGLE_SHEET_ID_ORDERS")
+
 creds_dict = json.loads(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"))
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -108,7 +111,7 @@ async def create_monopay_invoice(amount: int, description: str, order_id: str) -
 
 async def save_order_to_sheets(data: dict) -> bool:
     try:
-        worksheet = gc.open_by_key(GOOGLE_SHEET_ID).sheet1
+        worksheet = gc.open_by_key(GOOGLE_SHEET_ID_ORDERS).sheet1
         worksheet.append_row(
             [
                 data.get("location", ""),
@@ -129,7 +132,7 @@ async def save_order_to_sheets(data: dict) -> bool:
 
 async def get_chat_id_for_order(order_id: str) -> int | None:
     try:
-        worksheet = gc.open_by_key(GOOGLE_SHEET_ID).sheet1
+        worksheet = gc.open_by_key(GOOGLE_SHEET_ID_ORDERS).sheet1
         records = worksheet.get_all_records()
         for row in records:
             if str(row.get("order_id", "")) == str(order_id):
@@ -143,7 +146,7 @@ async def get_chat_id_for_order(order_id: str) -> int | None:
 
 def load_data_from_google_sheet():
     global locations, genres, book_data, rental_price_map
-    sh = gc.open_by_key(GOOGLE_SHEET_ID)
+    sh = gc.open_by_key(GOOGLE_SHEET_ID_LOCATIONS)
     worksheet = sh.sheet1
     records = worksheet.get_all_records()
     df = pd.DataFrame(records)
@@ -669,7 +672,7 @@ async def init_app():
 
     application.add_handler(conv_handler)
 
-    # Додатковий обробник /start на рівні Application для перезапуску з будь-якого стану
+    # Додатковий обробник /start для перезапуску з будь-якого стану
     application.add_handler(CommandHandler("start", start))
 
     await application.initialize()
@@ -706,4 +709,3 @@ if __name__ == "__main__":
         logger.info("Shutting down...")
         loop.run_until_complete(application.stop())
         loop.run_until_complete(application.shutdown())
-
