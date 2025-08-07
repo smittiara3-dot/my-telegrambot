@@ -5,10 +5,8 @@ import pprint
 import hmac
 import hashlib
 import uuid
-
-from dotenv import load_dotenv
+import asyncio
 from aiohttp import web, ClientSession
-
 from telegram import (
     Update, InlineKeyboardMarkup, InlineKeyboardButton,
     ReplyKeyboardMarkup, KeyboardButton,
@@ -18,10 +16,14 @@ from telegram.ext import (
     MessageHandler, ConversationHandler, filters, ContextTypes,
 )
 from telegram.error import BadRequest
-
 import gspread
 from google.oauth2.service_account import Credentials
 from google.auth.transport.requests import AuthorizedSession
+import pandas as pd
+import io
+import requests
+
+from dotenv import load_dotenv
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -33,6 +35,21 @@ MONOPAY_WEBHOOK_SECRET = os.getenv("MONOPAY_WEBHOOK_SECRET", None)
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # без кінцевого слеша
 PORT = int(os.getenv("PORT", 8443))
 
+# Ідентифікатор Google Sheets (у URL після /d/ і до /edit)
+GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
+
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets.readonly",
+]
+
+# Авторизація в Google API через service_account_info (тизькі права, краще для production)
+creds_dict = json.loads(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"))
+credentials = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
+gc = gspread.Client(auth=credentials)
+gc.session = AuthorizedSession(credentials)
+
+
+# Константи та стани для ConversationHandler:
 (
     START_MENU,
     DEPOSIT_PAYMENT,
@@ -46,36 +63,14 @@ PORT = int(os.getenv("PORT", 8443))
     CONFIRMATION,
 ) = range(10)
 
-locations = [f"Кав'ярня {chr(65 + i)}" for i in range(20)]
-genres = ["Фантастика", "Роман", "Історія", "Детектив"]
-rental_days = [7, 14]
-rental_price_map = {7: 70, 14: 140}
 books_per_page = 10
 locations_per_page = 10
 
-book_data = {
-    "Фантастика": [
-        {"title": f"Фантастична книга {i}", "desc": f"Це опис фантастичної книги {i}.", "price": rental_price_map[7]}
-        for i in range(1, 15)
-    ],
-    "Роман": [
-        {"title": "Анна Кареніна", "desc": "Трагічна історія кохання Анни Кареніної.", "price": rental_price_map[7]},
-        {"title": "Гордість і упередження", "desc": "Класика романтичної літератури.", "price": rental_price_map[7]},
-    ],
-    "Історія": [{"title": "Історія України", "desc": "Огляд історії України від давнини до сьогодення.", "price": rental_price_map[7]}],
-    "Детектив": [{"title": "Шерлок Холмс", "desc": "Класичні детективи про Шерлока Холмса.", "price": rental_price_map[7]}],
-}
-
-SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive",
-]
-creds_dict = json.loads(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"))
-credentials = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
-gc = gspread.Client(auth=credentials)
-gc.session = AuthorizedSession(credentials)
-sh = gc.open("RentalBookBot")
-worksheet = sh.sheet1
+# Змінні для зберігання даних, будуть ініціалізовані при запуску:
+locations = []
+genres = []
+book_data = {}
+rental_price_map = {}  # для різних термінів оренди
 
 
 def get_paginated_buttons(items, page, prefix, page_size, add_start_button=False):
@@ -119,6 +114,8 @@ async def create_monopay_invoice(amount: int, description: str, order_id: str) -
 
 
 async def save_order_to_sheets(data: dict) -> bool:
+    # Збереження замовлення у вже відкритий через gspread Google Sheet
+    worksheet = gc.open_by_key(GOOGLE_SHEET_ID).sheet1
     try:
         worksheet.append_row(
             [
@@ -139,6 +136,7 @@ async def save_order_to_sheets(data: dict) -> bool:
 
 
 async def get_chat_id_for_order(order_id: str) -> int | None:
+    worksheet = gc.open_by_key(GOOGLE_SHEET_ID).sheet1
     try:
         records = worksheet.get_all_records()
         for row in records:
@@ -151,13 +149,68 @@ async def get_chat_id_for_order(order_id: str) -> int | None:
     return None
 
 
-async def health_check(request):
-    return web.Response(text="OK", status=200)
+def load_data_from_google_sheet():
+    """
+    Завантажує всі дані з Google Sheets та ініціалізує глобальні змінні:
+    - locations
+    - genres
+    - book_data (словник жанр -> список книг)
+    - rental_price_map (з термінами оренди на основі цін з аркуша)
+    """
+    global locations, genres, book_data, rental_price_map
+
+    # Відкриваємо Google Sheet по ID
+    sh = gc.open_by_key(GOOGLE_SHEET_ID)
+    worksheet = sh.sheet1
+
+    # Отримуємо всі записи як список словників
+    records = worksheet.get_all_records()
+
+    # Використовуємо pandas для зручності обробки (опціонально)
+    df = pd.DataFrame(records)
+
+    # Унікальні локації
+    locations = sorted(df['location'].dropna().unique().tolist())
+
+    # Унікальні жанри
+    genres = sorted(df['genre'].dropna().unique().tolist())
+
+    # Формуємо словник книг за жанрами
+    book_data.clear()
+    for genre in genres:
+        books = []
+        df_genre = df[df['genre'] == genre]
+        for _, row in df_genre.iterrows():
+            book = {
+                "title": row['title'],
+                "desc": row['desc'],
+                "price_7": row.get('price_7', 70),
+                "price_14": row.get('price_14', 140),
+            }
+            books.append(book)
+        book_data[genre] = books
+
+    # Вивантажуємо ціни оренди (припускаємо, що ціни однакові для всіх книг, беремо з першого рядка)
+    if not df.empty:
+        rental_price_map = {
+            7: int(df.iloc[0].get('price_7', 70)),
+            14: int(df.iloc[0].get('price_14', 140))
+        }
+    else:
+        rental_price_map = {7: 70, 14: 140}
+    logger.info(f"Дані завантажено: {len(locations)} локацій, {len(genres)} жанрів.")
+
+
+# Застосовуємо get_paginated_buttons для жанрів та книг:
+def get_books_paginated(books_list, page):
+    start = page * books_per_page
+    end = start + books_per_page
+    return books_list[start:end], (len(books_list) - 1) // books_per_page
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message:
-        context.user_data.clear()  # очищення стану користувача
+        context.user_data.clear()
         keyboard = [
             [
                 InlineKeyboardButton("Я новий клієнт", callback_data="start:new_client"),
@@ -167,7 +220,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Вітаємо! Оберіть, будь ласка, варіант:", reply_markup=InlineKeyboardMarkup(keyboard))
         return START_MENU
     else:
-        # Якщо виклик з callback_query, просто показати стартове меню
         return await start_menu_handler(update, context)
 
 
@@ -204,11 +256,10 @@ async def start_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     elif data == "start:existing_client":
         context.user_data["is_new_client"] = False
         try:
+            keyboard = get_paginated_buttons(locations, 0, "location", locations_per_page, add_start_button=True)
             await query.edit_message_text(
                 "Вітаємо з поверненням! Оберіть локацію:",
-                reply_markup=InlineKeyboardMarkup(
-                    get_paginated_buttons(locations, 0, "location", locations_per_page, add_start_button=True)
-                ),
+                reply_markup=InlineKeyboardMarkup(keyboard),
             )
         except BadRequest as e:
             if "Message is not modified" not in str(e):
@@ -218,11 +269,10 @@ async def start_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     elif data == "deposit_done":
         try:
+            keyboard = get_paginated_buttons(locations, 0, "location", locations_per_page, add_start_button=True)
             await query.edit_message_text(
                 "Дякуємо за оплату застави! Оберіть локацію:",
-                reply_markup=InlineKeyboardMarkup(
-                    get_paginated_buttons(locations, 0, "location", locations_per_page, add_start_button=True)
-                ),
+                reply_markup=InlineKeyboardMarkup(keyboard),
             )
         except BadRequest as e:
             if "Message is not modified" not in str(e):
@@ -232,17 +282,16 @@ async def start_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     elif data == "back:start":
         context.user_data.clear()
+        keyboard = [
+            [
+                InlineKeyboardButton("Я новий клієнт", callback_data="start:new_client"),
+                InlineKeyboardButton("Я вже користуюсь сервісом", callback_data="start:existing_client"),
+            ]
+        ]
         try:
             await query.edit_message_text(
                 "Вітаємо! Оберіть, будь ласка, варіант:",
-                reply_markup=InlineKeyboardMarkup(
-                    [
-                        [
-                            InlineKeyboardButton("Я новий клієнт", callback_data="start:new_client"),
-                            InlineKeyboardButton("Я вже користуюсь сервісом", callback_data="start:existing_client"),
-                        ]
-                    ]
-                ),
+                reply_markup=InlineKeyboardMarkup(keyboard),
             )
         except BadRequest as e:
             if "Message is not modified" not in str(e):
@@ -255,24 +304,20 @@ async def start_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def show_locations(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.callback_query:
-        query = update.callback_query
-        await query.answer()
-        try:
-            await query.edit_message_text(
-                "👋 *Оберіть локацію:*",
-                reply_markup=InlineKeyboardMarkup(
-                    get_paginated_buttons(locations, 0, "location", locations_per_page, add_start_button=True)
-                ),
-                parse_mode="Markdown",
-            )
-        except BadRequest as e:
-            if "Message is not modified" not in str(e):
-                raise
-        context.user_data["location_page"] = 0
-        return CHOOSE_LOCATION
-    else:
-        return await start(update, context)
+    query = update.callback_query
+    await query.answer()
+    keyboard = get_paginated_buttons(locations, 0, "location", locations_per_page, add_start_button=True)
+    try:
+        await query.edit_message_text(
+            "👋 *Оберіть локацію:*",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown",
+        )
+    except BadRequest as e:
+        if "Message is not modified" not in str(e):
+            raise
+    context.user_data["location_page"] = 0
+    return CHOOSE_LOCATION
 
 
 async def choose_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -292,6 +337,7 @@ async def choose_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if "Message is not modified" not in str(e):
                 raise
         return CHOOSE_LOCATION
+
     elif data == "location_prev":
         prev_page = max(current_page - 1, 0)
         context.user_data["location_page"] = prev_page
@@ -303,18 +349,14 @@ async def choose_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 raise
         return CHOOSE_LOCATION
 
+    # Вибрана локація
     context.user_data["location"] = data.split(":", 1)[1]
     return await show_genres(update, context)
 
 
 async def show_genres(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.callback_query:
-        query = update.callback_query
-        await query.answer()
-        message_func = query.edit_message_text
-    else:
-        message_func = update.message.reply_text
-
+    query = update.callback_query
+    await query.answer()
     keyboard = [[InlineKeyboardButton(genre, callback_data=f"genre:{genre}")] for genre in genres]
     keyboard.append([InlineKeyboardButton("📚 Показати всі книги", callback_data="genre:all")])
     keyboard.append(
@@ -322,7 +364,7 @@ async def show_genres(update: Update, context: ContextTypes.DEFAULT_TYPE):
          InlineKeyboardButton("🏠 На початок", callback_data="back:start")]
     )
     try:
-        await message_func("Оберіть жанр:", reply_markup=InlineKeyboardMarkup(keyboard))
+        await query.edit_message_text("Оберіть жанр:", reply_markup=InlineKeyboardMarkup(keyboard))
     except BadRequest as e:
         if "Message is not modified" not in str(e):
             raise
@@ -399,7 +441,10 @@ async def book_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     title = query.data.split(":", 1)[1]
     genre = context.user_data.get("genre")
-    books = book_data.get(genre, []) if genre != "all" else sum(book_data.values(), [])
+    if genre == "all":
+        books = sum(book_data.values(), [])
+    else:
+        books = book_data.get(genre, [])
     book = next((b for b in books if b["title"] == title), None)
     if not book:
         try:
@@ -410,7 +455,12 @@ async def book_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return SHOW_BOOKS
 
     context.user_data["book"] = book
-    text = f"*{book['title']}*\n\n{book['desc']}\n\n💸 *Ціна оренди:*\n7 днів — 70 грн\n14 днів — 140 грн"
+    text = (
+        f"*{book['title']}*\n\n{book['desc']}\n\n"
+        f"💸 *Ціна оренди:*\n"
+        f"7 днів — {book.get('price_7', rental_price_map.get(7,70))} грн\n"
+        f"14 днів — {book.get('price_14', rental_price_map.get(14,140))} грн"
+    )
     buttons = [
         InlineKeyboardButton("7 днів", callback_data="days:7"),
         InlineKeyboardButton("14 днів", callback_data="days:14"),
@@ -431,8 +481,8 @@ async def choose_days(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     buttons = [
-        InlineKeyboardButton("7 днів - 70 грн", callback_data="days:7"),
-        InlineKeyboardButton("14 днів - 140 грн", callback_data="days:14"),
+        InlineKeyboardButton("7 днів", callback_data="days:7"),
+        InlineKeyboardButton("14 днів", callback_data="days:14"),
         InlineKeyboardButton("🔙 До книг", callback_data="back:books"),
         InlineKeyboardButton("🔙 До жанрів", callback_data="back:genres"),
         InlineKeyboardButton("🔙 До локацій", callback_data="back:locations"),
@@ -475,7 +525,9 @@ async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data["chat_id"] = update.effective_chat.id
 
     days = int(data.get("days", 7))
-    price_total = rental_price_map.get(days, 70)
+    book = data.get("book", {})
+    # Визначаємо ціну оренди залежно від строку (7 або 14 днів)
+    price_total = book.get(f'price_{days}', rental_price_map.get(days, 70))
     data["book"]["price"] = price_total
 
     logger.info("Отримане замовлення: %s", pprint.pformat(data))
@@ -498,7 +550,7 @@ async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     buttons = [
         [InlineKeyboardButton("💳 Оплатити", callback_data="pay_now")],
-        [InlineKeyboardButton("🏠 На початок", callback_data="back:start")],  # додано кнопку назад
+        [InlineKeyboardButton("🏠 На початок", callback_data="back:start")],
     ]
     await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
     return CONFIRMATION
@@ -509,14 +561,14 @@ async def confirm_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     data = context.user_data
     days = int(data.get("days", 7))
-    price_total = rental_price_map.get(days, 70)
+    price_total = data.get("book", {}).get(f"price_{days}", rental_price_map.get(days, 70))
     description = f"Оренда книги {data['book']['title']} на {days} днів"
     order_id = data["order_id"]
     try:
         invoice_url = await create_monopay_invoice(price_total, description, order_id)
         buttons = [
             [InlineKeyboardButton("Оплатити MonoPay", url=invoice_url)],
-            [InlineKeyboardButton("🏠 На початок", callback_data="back:start")],  # кнопка "На початок"
+            [InlineKeyboardButton("🏠 На початок", callback_data="back:start")],
         ]
         await query.edit_message_text(
             "Будь ласка, оплатіть за посиланням нижче або поверніться в меню:",
@@ -546,17 +598,16 @@ async def go_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await show_locations(update, context)
     elif data == "back:start":
         context.user_data.clear()
+        keyboard = [
+            [
+                InlineKeyboardButton("Я новий клієнт", callback_data="start:new_client"),
+                InlineKeyboardButton("Я вже користуюсь сервісом", callback_data="start:existing_client"),
+            ]
+        ]
         try:
             await query.edit_message_text(
                 "Вітаємо! Оберіть, будь ласка, варіант:",
-                reply_markup=InlineKeyboardMarkup(
-                    [
-                        [
-                            InlineKeyboardButton("Я новий клієнт", callback_data="start:new_client"),
-                            InlineKeyboardButton("Я вже користуюсь сервісом", callback_data="start:existing_client"),
-                        ]
-                    ]
-                ),
+                reply_markup=InlineKeyboardMarkup(keyboard),
             )
         except BadRequest as e:
             if "Message is not modified" not in str(e):
@@ -596,6 +647,11 @@ async def telegram_webhook_handler(request):
 
 
 async def init_app():
+    global locations, genres, book_data, rental_price_map
+
+    # Завантажуємо дані з Google Sheet при старті бота
+    load_data_from_google_sheet()
+
     application = Application.builder().token(BOT_TOKEN).build()
 
     conv_handler = ConversationHandler(
@@ -630,7 +686,7 @@ async def init_app():
     await application.start()
 
     app = web.Application()
-    app.router.add_get("/", health_check)  # health check endpoint
+    app.router.add_get("/", lambda request: web.Response(text="OK", status=200))
     app.router.add_post("/telegram_webhook", telegram_webhook_handler)
     app.router.add_post("/monopay_callback", monopay_webhook)
     app.bot_updater = application
@@ -649,8 +705,6 @@ async def init_app():
 
 
 if __name__ == "__main__":
-    import asyncio
-
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
