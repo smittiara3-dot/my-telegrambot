@@ -20,6 +20,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 from google.auth.transport.requests import AuthorizedSession
 import pandas as pd
+from datetime import datetime
 
 from dotenv import load_dotenv
 
@@ -115,23 +116,29 @@ async def create_monopay_invoice(amount: int, description: str, order_id: str) -
 async def save_order_to_sheets(data: dict) -> bool:
     try:
         worksheet = gc.open_by_key(GOOGLE_SHEET_ID_ORDERS).sheet1
-        # Якщо у data немає 'location', передати інформацію зі звʼязаних локацій книги або порожній рядок
+
         location_str = data.get("location")
         if not location_str:
-            # Якщо 'book' є, отримуємо список локацій з map
             book_title = data.get("book", {}).get("title", "")
             locs = book_to_locations.get(book_title, [])
             location_str = ", ".join(locs) if locs else ""
+
+        book = data.get("book", {})
+        author = book.get("author", "")
+
+        # Додамо дату і час у ISO форматі, локальний час сервера
+        order_datetime = datetime.now().isoformat(sep=' ', timespec='seconds')
+
         worksheet.append_row(
             [
                 location_str,
+                author,
+                book.get("title", ""),
                 data.get("genre", ""),
-                data.get("book", {}).get("title", ""),
                 data.get("days", ""),
                 data.get("name", ""),
                 data.get("contact", ""),
-                data.get("order_id", ""),
-                data.get("chat_id", ""),
+                order_datetime,
             ]
         )
         return True
@@ -589,20 +596,35 @@ async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     data = context.user_data
 
-    # Забираємо локацію з user_data, якщо немає - формуємо список з локацій книги
+    # Забираємо локацію, автор, жанр з user_data і book
     location = data.get("location")
+    book = data.get("book", {})
+    author = book.get("author", "")
+    genre = data.get("genre")
+
+    # Якщо жанр з user_data містить префікс author: або all то підставимо genre книги
+    if genre is None or genre.startswith("author:") or genre in ["all", "all_location"]:
+        # Спробуємо визначити жанр книги з основних даних (перебір genres, шукаємо де є книга)
+        # Якщо не знайдемо - поставимо пустий рядок
+        genre_found = ""
+        for g, books_list in book_data.items():
+            if any(b['title'] == book.get("title") for b in books_list):
+                genre_found = g
+                break
+        genre = genre_found
+        data["genre"] = genre
+
+    # Якщо локація не вибрана, сформуємо список локацій для книги
     if not location:
-        book_title = data.get("book", {}).get("title", "")
+        book_title = book.get("title", "")
         locations_list = book_to_locations.get(book_title, [])
         location = ", ".join(locations_list) if locations_list else ""
-
-    data["location"] = location
+        data["location"] = location
 
     data["order_id"] = str(uuid.uuid4())
     data["chat_id"] = update.effective_chat.id
 
     days = int(data.get("days", 7))
-    book = data.get("book", {})
     price_total = book.get(f'price_{days}', rental_price_map.get(days, 70))
     data["book"]["price"] = price_total
 
@@ -615,14 +637,14 @@ async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = (
         f"📚 *Ваше замовлення:*\n"
-        f"🏠 Локація: {data['location']}\n"
-        f"📖 Книга: {data['book']['title']}\n"
-        f"🗂 Жанр: {data['genre']}\n"
+        f"🏠 Локація: {location}\n"
+        f"🖋 Автор: {author}\n"
+        f"📖 Книга: {book.get('title', '')}\n"
+        f"🗂 Жанр: {genre}\n"
         f"📆 Днів: {days}\n"
         f"👤 Ім'я: {data['name']}\n"
         f"📞 Контакт: {data['contact']}\n"
-        f"🆔 ID замовлення: {data['order_id']}\n\n"
-        f"Сума до оплати: *{price_total} грн*"
+        f"\nСума до оплати: *{price_total} грн*"
     )
     buttons = [
         [InlineKeyboardButton("💳 Оплатити", callback_data="pay_now")],
