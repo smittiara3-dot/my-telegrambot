@@ -64,10 +64,10 @@ locations_per_page = 10
 locations = []
 genres = []
 authors = []
-book_data = {}          
-book_to_locations = {}  
-location_to_books = {}  
-author_to_books = {}    
+book_data = {}
+book_to_locations = {}
+location_to_books = {}
+author_to_books = {}
 rental_price_map = {}
 
 def get_paginated_buttons(items, page, prefix, page_size, add_start_button=False):
@@ -84,6 +84,11 @@ def get_paginated_buttons(items, page, prefix, page_size, add_start_button=False
     if add_start_button:
         buttons.append([InlineKeyboardButton("🏠 На початок", callback_data="back:start")])
     return buttons
+
+# --- MOD: Новий функція для формування безпечного callback_data для книги ---
+def make_book_callback_data(title: str) -> str:
+    h = hashlib.sha256(title.encode('utf-8')).hexdigest()[:16]  # 16 символів хешу
+    return f"book:{h}"
 
 async def create_monopay_invoice(amount: int, description: str, order_id: str) -> str:
     url = "https://api.monobank.ua/api/merchant/invoice/create"
@@ -175,20 +180,17 @@ def load_data_from_google_sheet():
             }
             books.append(book)
 
-            # book to locations
             if book["title"] not in book_to_locations:
                 book_to_locations[book["title"]] = []
             if row['location'] not in book_to_locations[book["title"]]:
                 book_to_locations[book["title"]].append(row['location'])
 
-            # location to books
             loc = row['location']
             if loc not in location_to_books:
                 location_to_books[loc] = []
             if book["title"] not in location_to_books[loc]:
                 location_to_books[loc].append(book["title"])
 
-            # author to books
             if author:
                 if author not in author_to_books:
                     author_to_books[author] = []
@@ -222,7 +224,7 @@ async def reload_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- Зміни у старті ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.clear()    
+    context.user_data.clear()
     try:
         load_data_from_google_sheet()
         logger.info("Дані з Google Sheets оновлені у /start")
@@ -303,7 +305,6 @@ async def choose_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(f"На локації \"{loc_selected}\" наразі немає доступних книг.")
         return CHOOSE_LOCATION
 
-    # Знаходимо жанри на цій локації
     genres_in_location_set = set()
     for genre, books in book_data.items():
         titles = [b['title'] for b in books]
@@ -315,7 +316,6 @@ async def choose_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["location_genres"] = genres_in_location
     context.user_data["location_books"] = loc_books_titles
 
-    # Відправляємо повідомлення з текстом про жанри (пункт 2)
     await show_genres_for_location(update, context)
     return CHOOSE_GENRE
 
@@ -375,7 +375,6 @@ async def choose_genre(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_books(update, context)
         return SHOW_BOOKS
 
-    # Фільтр книг за жанром і локацією
     if loc:
         loc_books_titles = location_to_books.get(loc, [])
         genre_books = book_data.get(genre, [])
@@ -397,7 +396,6 @@ async def choose_genre(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_books(update, context)
         return SHOW_BOOKS
     else:
-        # Якщо локації нема — показати всі книги в жанрі
         genre_books = book_data.get(genre, [])
         if not genre_books:
             try:
@@ -414,6 +412,7 @@ async def choose_genre(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_books(update, context)
         return SHOW_BOOKS
 
+# --- MOD: show_books з використанням хешів для callback_data ---
 async def show_books(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -423,12 +422,20 @@ async def show_books(update: Update, context: ContextTypes.DEFAULT_TYPE):
     page_books = books[start:end]
     buttons = []
 
+    # Створюємо map hash -> book title
+    book_hash_map = {}
     for book in page_books:
+        book_title = book['title']
+        h = hashlib.sha256(book_title.encode('utf-8')).hexdigest()[:16]
+        book_hash_map[h] = book_title
+
         author = book.get("author", "")
-        title_text = f"{book['title']}"
+        title_text = f"{book_title}"
         if author:
             title_text += f" ({author})"
-        buttons.append([InlineKeyboardButton(title_text, callback_data=f"book:{book['title']}")])
+        buttons.append([InlineKeyboardButton(title_text, callback_data=f"book:{h}")])
+
+    context.user_data["book_hash_map"] = book_hash_map
 
     nav = []
     if start > 0:
@@ -464,17 +471,39 @@ async def book_navigation(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["book_page"] = max(current_page - 1, 0)
     return await show_books(update, context)
 
+# --- MOD: обробка book_detail по хешу з context.user_data['book_hash_map'] ---
 async def book_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    title = query.data.split(":", 1)[1]
+    book_hash = query.data.split(":", 1)[1]
+
+    book_hash_map = context.user_data.get("book_hash_map", {})
+    book_title = book_hash_map.get(book_hash, None)
+    if not book_title:
+        try:
+            await query.edit_message_text("Книгу не знайдено (некоректний код).")
+        except BadRequest as e:
+            if "Message is not modified" not in str(e):
+                raise
+        return SHOW_BOOKS
+
     genre = context.user_data.get("genre")
 
-    if genre in ["all", "all_location"]:
-        book = next((b for b in context.user_data.get("books", []) if b["title"] == title), None)
-    else:
-        genre_books = book_data.get(genre, [])
-        book = next((b for b in genre_books if b["title"] == title), None)
+    # Знаходимо книгу за назвою в поточному списку книг
+    current_books = context.user_data.get("books", [])
+    book = next((b for b in current_books if b["title"] == book_title), None)
+
+    if not book:
+        # Шукаємо у загальній базі book_data
+        if genre in ["all", "all_location"]:
+            for g_books in book_data.values():
+                candidate = next((b for b in g_books if b["title"] == book_title), None)
+                if candidate:
+                    book = candidate
+                    break
+        else:
+            genre_books = book_data.get(genre, [])
+            book = next((b for b in genre_books if b["title"] == book_title), None)
 
     if not book:
         try:
@@ -486,7 +515,6 @@ async def book_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data["book"] = book
 
-    # Замінимо опис на ваш теплий текст після вибору книги
     text = (
         "О, чудовий вибір! Ця книга — справжня перлина \n"
         "Вона знайшла тебе не випадково. Хай читається легко, а думки розпускаються, як чай у теплій чашці."
@@ -507,8 +535,9 @@ async def book_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
             raise
     return BOOK_DETAILS
 
+# --- Далі код без змін ---
+
 async def choose_days(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Ніколи не викликається після вибору книги, бо тепер вибір днів робиться з книгою
     query = update.callback_query
     await query.answer()
     buttons = [
@@ -532,7 +561,6 @@ async def days_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     days = int(query.data.split(":")[1])
     context.user_data["days"] = str(days)
 
-    # Показати текст з правилами і запитати ім'я + контакт (пункт 5)
     rules_text = (
         "Перш ніж книга вирушить з тобою, розповім кілька простих і чесних правил:\n"
         "• Бронь діє 14 днів з моменту оплати\n"
@@ -545,7 +573,6 @@ async def days_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except BadRequest as e:
         if "Message is not modified" not in str(e):
             raise
-    # Тепер чекаємо, що користувач введе ім'я
     return GET_NAME
 
 async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -628,12 +655,10 @@ async def go_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if context.user_data.get("location"):
             return await show_genres_for_location(update, context)
         else:
-            # Якщо бракує локації, повернути на старт
             return await start(update, context)
     elif data == "back:books":
         return await show_books(update, context)
     elif data == "back:locations":
-        # Показати вибір локації з вашим стартовим текстом
         welcome_text = (
             "Привіт! Я — Ботик-книголюб\n"
             "Я доглядаю за Тихою поличкою — місцем, де книги говорять у тиші, а читачі знаходять саме ту історію, яка зараз потрібна.\n"
@@ -675,8 +700,6 @@ async def go_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 raise
         return CHOOSE_LOCATION
 
-# --- Обробка кнопок показу всіх книг і авторів ---
-
 async def start_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -714,7 +737,7 @@ async def start_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if "Message is not modified" not in str(e):
                 raise
         context.user_data["author_page"] = 0
-        return CHOOSE_GENRE  # Використаємо CHOOSE_GENRE, бо авторів і жанрів не було раніше
+        return CHOOSE_GENRE 
 
     else:
         await query.answer("Невідома дія")
@@ -760,8 +783,6 @@ async def choose_author(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["author_name"] = author_name
         return await show_books(update, context)
 
-# --- Основний стартовий ConversationHandler, запуск додатку ---
-
 async def init_app():
 
     load_data_from_google_sheet()
@@ -794,7 +815,6 @@ async def init_app():
                 CallbackQueryHandler(go_back, pattern=r"^back:(books|genres|locations|start)$"),
             ],
             CHOOSE_RENT_DAYS: [
-                # Тепер не потрібен, бо вибір днів іде в BOOK_DETAILS
             ],
             GET_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_name)],
             GET_CONTACT: [MessageHandler(filters.CONTACT | filters.TEXT, get_contact)],
