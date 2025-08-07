@@ -35,7 +35,10 @@ PORT = int(os.getenv("PORT", 8443))
 
 GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
 creds_dict = json.loads(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"))
-SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive"
+]
 
 credentials = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
 gc = gspread.Client(auth=credentials)
@@ -703,3 +706,4 @@ if __name__ == "__main__":
         logger.info("Shutting down...")
         loop.run_until_complete(application.stop())
         loop.run_until_complete(application.shutdown())
+
