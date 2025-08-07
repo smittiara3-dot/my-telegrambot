@@ -33,7 +33,7 @@ MONOPAY_WEBHOOK_SECRET = os.getenv("MONOPAY_WEBHOOK_SECRET", None)
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # без кінцевого слеша
 PORT = int(os.getenv("PORT", 8443))
 
-# Вказуємо окремі ID Google Sheets (один для каталогу, другий для замовлень)
+# Окремі Google Sheet ID для локацій/книг та для замовлень
 GOOGLE_SHEET_ID_LOCATIONS = os.getenv("GOOGLE_SHEET_ID_LOCATIONS")
 GOOGLE_SHEET_ID_ORDERS = os.getenv("GOOGLE_SHEET_ID_ORDERS")
 
@@ -169,7 +169,7 @@ def load_data_from_google_sheet():
         rental_price_map = {7: 70, 14: 140}
     logger.info(f"Дані завантажено: {len(locations)} локацій, {len(genres)} жанрів.")
 
-# Нова команда для оновлення даних із Google Sheets
+# Команда /reload — оновлення даних вручну
 async def reload_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         load_data_from_google_sheet()
@@ -179,8 +179,15 @@ async def reload_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Помилка оновлення даних з Google Sheets: {e}", exc_info=True)
         await update.message.reply_text("Сталася помилка при оновленні даних. Спробуйте пізніше.")
 
+# Оновлений /start — тепер завантажує дані щоразу
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
+    try:
+        load_data_from_google_sheet()
+        logger.info("Дані з Google Sheets оновлені у /start")
+    except Exception as e:
+        logger.error(f"Помилка оновлення даних у /start: {e}")
+
     keyboard = [
         [
             InlineKeyboardButton("Я новий клієнт", callback_data="start:new_client"),
@@ -261,6 +268,12 @@ async def start_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     elif data == "back:start":
         context.user_data.clear()
+        try:
+            load_data_from_google_sheet()
+            logger.info("Дані з Google Sheets оновлені при натисканні 'На початок'")
+        except Exception as e:
+            logger.error(f"Помилка оновлення даних при 'На початок': {e}")
+
         keyboard = [
             [
                 InlineKeyboardButton("Я новий клієнт", callback_data="start:new_client"),
@@ -559,6 +572,12 @@ async def go_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await show_locations(update, context)
     elif data == "back:start":
         context.user_data.clear()
+        try:
+            load_data_from_google_sheet()
+            logger.info("Дані з Google Sheets оновлені при натисканні 'На початок'")
+        except Exception as e:
+            logger.error(f"Помилка оновлення даних при 'На початок': {e}")
+
         keyboard = [
             [
                 InlineKeyboardButton("Я новий клієнт", callback_data="start:new_client"),
@@ -654,9 +673,8 @@ async def init_app():
 
     application.add_handler(conv_handler)
 
-    # Command /start доступний завжди для перезапуску діалогу
+    # Додаткові обробники: команди /start і /reload
     application.add_handler(CommandHandler("start", start))
-    # Command /reload для оновлення даних із google sheets
     application.add_handler(CommandHandler("reload", reload_data))
 
     await application.initialize()
