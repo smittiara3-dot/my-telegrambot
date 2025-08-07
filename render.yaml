@@ -8,6 +8,8 @@ services:
     envVars:
       - key: TOKEN
         value: "8447751977:AAFXGtRnMuK_SnSMnyTu6aYO2pdmwIhY_ZU"
+        key: GOOGLE_SHEET_ID
+        value: "12NgTrVF_d6LE0qDQEyLBz7eBIYy1G-FWE7Q0DykFGbQ"
       - key: ADMIN_CHAT_ID
         value: "1332202691"
       - key: WEBHOOK_URL
@@ -16,6 +18,7 @@ services:
         value: "uOsUlxHhwx2koIxLJhLipenZDNyXs9jCJ4ZL7Mhx7hIc"
       - key: PORT
         value: "8443"
+
 
 
 
