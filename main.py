@@ -496,8 +496,11 @@ async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🆔 ID замовлення: {data['order_id']}\n\n"
         f"Сума до оплати: *{price_total} грн*"
     )
-    button = InlineKeyboardButton("💳 Оплатити", callback_data="pay_now")
-    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup([[button]]), parse_mode="Markdown")
+    buttons = [
+        [InlineKeyboardButton("💳 Оплатити", callback_data="pay_now")],
+        [InlineKeyboardButton("🏠 На початок", callback_data="back:start")],  # додано кнопку назад
+    ]
+    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
     return CONFIRMATION
 
 
@@ -511,13 +514,24 @@ async def confirm_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     order_id = data["order_id"]
     try:
         invoice_url = await create_monopay_invoice(price_total, description, order_id)
-        buttons = [[InlineKeyboardButton("Оплатити MonoPay", url=invoice_url)]]
+        buttons = [
+            [InlineKeyboardButton("Оплатити MonoPay", url=invoice_url)],
+            [InlineKeyboardButton("🏠 На початок", callback_data="back:start")],  # кнопка "На початок"
+        ]
         await query.edit_message_text(
-            "Будь ласка, оплатіть за посиланням нижче:", reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown"
+            "Будь ласка, оплатіть за посиланням нижче або поверніться в меню:",
+            reply_markup=InlineKeyboardMarkup(buttons),
+            parse_mode="Markdown"
         )
     except Exception as e:
         logger.error(f"Помилка створення інвойсу MonoPay: {e}")
-        await query.edit_message_text(f"Сталася помилка при створенні платежу: {e}")
+        buttons = [
+            [InlineKeyboardButton("🏠 На початок", callback_data="back:start")]
+        ]
+        await query.edit_message_text(
+            f"Сталася помилка при створенні платежу: {e}",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
     return CONFIRMATION
 
 
