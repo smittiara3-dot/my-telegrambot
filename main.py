@@ -33,7 +33,6 @@ MONOPAY_WEBHOOK_SECRET = os.getenv("MONOPAY_WEBHOOK_SECRET", None)
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # без кінцевого слеша
 PORT = int(os.getenv("PORT", 8443))
 
-# Окремі Google Sheet ID для локацій/книг та для замовлень
 GOOGLE_SHEET_ID_LOCATIONS = os.getenv("GOOGLE_SHEET_ID_LOCATIONS")
 GOOGLE_SHEET_ID_ORDERS = os.getenv("GOOGLE_SHEET_ID_ORDERS")
 
@@ -179,7 +178,6 @@ async def reload_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Помилка оновлення даних з Google Sheets: {e}", exc_info=True)
         await update.message.reply_text("Сталася помилка при оновленні даних. Спробуйте пізніше.")
 
-# Оновлений /start — тепер завантажує дані щоразу
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     try:
@@ -672,8 +670,6 @@ async def init_app():
     )
 
     application.add_handler(conv_handler)
-
-    # Додаткові обробники: команди /start і /reload
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("reload", reload_data))
 
