@@ -154,9 +154,9 @@ def load_data_from_google_sheet():
     locations = sorted(df['location'].dropna().unique().tolist())
     genres = sorted(df['genre'].dropna().unique().tolist())
 
-    # Зчитуємо авторів, непорожні в полі "author", унікально
-    authors_raw = df['author'].dropna().unique()
-    authors = sorted([a.strip() for a in authors_raw if a.strip()])
+    # Зчитуємо авторів, непорожні в полі "author"
+    authors_raw = df['author'].dropna().unique() if 'author' in df.columns else []
+    authors = sorted([a.strip() for a in authors_raw if a.strip()]) if authors_raw is not None else []
 
     book_data.clear()
     book_to_locations.clear()
@@ -194,7 +194,7 @@ def load_data_from_google_sheet():
             if author:
                 if author not in author_to_books:
                     author_to_books[author] = []
-                if book["title"] not in author_to_books[author]:
+                if book["title"] not in [b['title'] for b in author_to_books[author]]:
                     author_to_books[author].append(book)
 
         book_data[genre] = books
@@ -212,7 +212,6 @@ def load_data_from_google_sheet():
     logger.info(f"Зв’язки location_to_books: {len(location_to_books)} локацій.")
     logger.info(f"Зв’язки author_to_books: {len(author_to_books)} авторів.")
 
-# --- Команда /reload ---
 async def reload_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         load_data_from_google_sheet()
@@ -222,7 +221,6 @@ async def reload_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Помилка оновлення даних з Google Sheets: {e}", exc_info=True)
         await update.message.reply_text("Сталася помилка при оновленні даних. Спробуйте пізніше.")
 
-# --- стартове меню ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     try:
@@ -255,13 +253,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 raise
     return START_MENU
 
-# --- обробка вибору стартового меню ---
 async def start_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
 
-    # Логіка для старих варіантів залишена без змін...
     if data == "start:new_client":
         deposit_amount = 500
         order_id = f"deposit_{uuid.uuid4()}"
@@ -344,20 +340,9 @@ async def start_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return START_MENU
 
     elif data == "all_books":
-        # Формуємо список усіх книг з унікальними заголовками
-        all_books_titles = []
-        for genre_books in book_data.values():
-            for book in genre_books:
-                if book["title"] not in all_books_titles:
-                    all_books_titles.append(book["title"])
-        if not all_books_titles:
-            await query.edit_message_text("Поки що немає доступних книг.")
-            return START_MENU
-
         books_all = []
         for genre_books in book_data.values():
             books_all.extend(genre_books)
-
         unique_books = {}
         for b in books_all:
             unique_books[b["title"]] = b
@@ -369,7 +354,6 @@ async def start_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return await show_books(update, context)
 
     elif data == "all_authors":
-        # Виводимо список авторів для вибору
         if not authors:
             await query.edit_message_text("Поки що немає авторів у системі.")
             return START_MENU
@@ -383,13 +367,12 @@ async def start_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if "Message is not modified" not in str(e):
                 raise
         context.user_data["author_page"] = 0
-        return "CHOOSE_AUTHOR"  # новий стан
+        return "CHOOSE_AUTHOR"
 
     else:
         await query.answer("Невідома дія")
         return START_MENU
 
-# --- меню вибору локацій ---
 async def show_locations(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -408,7 +391,6 @@ async def show_locations(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["location_page"] = 0
     return CHOOSE_LOCATION
 
-# --- вибір локації ---
 async def choose_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -487,7 +469,6 @@ async def show_genres_for_location(update: Update, context: ContextTypes.DEFAULT
     )
     return CHOOSE_GENRE
 
-# --- меню вибору авторів ---
 async def choose_author(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -516,7 +497,6 @@ async def choose_author(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 raise
         return "CHOOSE_AUTHOR"
     else:
-        # обрано автора
         author_name = data.split(":", 1)[1]
         books_by_author = author_to_books.get(author_name, [])
         if not books_by_author:
@@ -529,14 +509,12 @@ async def choose_author(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["author_name"] = author_name
         return await show_books(update, context)
 
-# --- Оновлений choose_genre з підтримкою "all_location" ---
 async def choose_genre(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     genre = query.data.split(":", 1)[1]
 
     if genre == "all":
-        # всі книги по всіх жанрах
         books_all = []
         for genre_books in book_data.values():
             books_all.extend(genre_books)
@@ -625,12 +603,11 @@ async def show_books(update: Update, context: ContextTypes.DEFAULT_TYPE):
     buttons = []
 
     for book in page_books:
-        # Виводимо автора поруч із назвою книги
         author = book.get("author", "")
         title_text = f"{book['title']}"
         if author:
             title_text += f" ({author})"
-        buttons.append(InlineKeyboardButton(title_text, callback_data=f"book:{book['title']}"))
+        buttons.append([InlineKeyboardButton(title_text, callback_data=f"book:{book['title']}")])
 
     nav = []
     if start > 0:
@@ -639,6 +616,7 @@ async def show_books(update: Update, context: ContextTypes.DEFAULT_TYPE):
         nav.append(InlineKeyboardButton("➡️", callback_data="book_next"))
     if nav:
         buttons.append(nav)
+
     buttons.append(
         [
             InlineKeyboardButton("🔙 До жанрів", callback_data="back:genres"),
@@ -647,7 +625,7 @@ async def show_books(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
     )
     try:
-        await query.edit_message_text("Оберіть книгу:", reply_markup=InlineKeyboardMarkup([buttons]))
+        await query.edit_message_text("Оберіть книгу:", reply_markup=InlineKeyboardMarkup(buttons))
     except BadRequest as e:
         if "Message is not modified" not in str(e):
             raise
@@ -722,7 +700,7 @@ async def book_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
             raise
     return BOOK_DETAILS
 
-# Решта функцій залишаємо без змін (choose_days, days_chosen, get_name, get_contact, confirm_payment, go_back, monopay_webhook, telegram_webhook_handler)
+# Решта функцій залишаються без змін:
 
 async def choose_days(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -833,7 +811,6 @@ async def go_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if context.user_data.get("location"):
             return await show_genres_for_location(update, context)
         elif context.user_data.get("author_name"):
-            # Якщо був вибір автора, повернутися до списку авторів
             return await choose_author(update, context)
         else:
             return await show_genres(update, context)
@@ -848,7 +825,6 @@ async def go_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.info("Дані з Google Sheets оновлені при натисканні 'На початок'")
         except Exception as e:
             logger.error(f"Помилка оновлення даних при 'На початок': {e}")
-
         keyboard = [
             [
                 InlineKeyboardButton("Я новий клієнт", callback_data="start:new_client"),
@@ -866,7 +842,6 @@ async def go_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 raise
         return START_MENU
 
-# --- Webhook handlers ---
 async def monopay_webhook(request):
     try:
         body = await request.text()
@@ -896,7 +871,6 @@ async def telegram_webhook_handler(request):
     await bot_app.process_update(update)
     return web.Response(text="OK", status=200)
 
-# --- init app ---
 async def init_app():
     global locations, genres, book_data, rental_price_map
 
@@ -975,7 +949,6 @@ async def init_app():
     logger.info(f"Telegram webhook set to {WEBHOOK_URL.rstrip('/')}/telegram_webhook")
 
     return app, application
-
 
 if __name__ == "__main__":
     loop = asyncio.new_event_loop()
