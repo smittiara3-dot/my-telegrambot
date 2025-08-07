@@ -20,8 +20,6 @@ import gspread
 from google.oauth2.service_account import Credentials
 from google.auth.transport.requests import AuthorizedSession
 import pandas as pd
-import io
-import requests
 
 from dotenv import load_dotenv
 
@@ -35,21 +33,14 @@ MONOPAY_WEBHOOK_SECRET = os.getenv("MONOPAY_WEBHOOK_SECRET", None)
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # без кінцевого слеша
 PORT = int(os.getenv("PORT", 8443))
 
-# Ідентифікатор Google Sheets (у URL після /d/ і до /edit)
 GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
-
-SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets.readonly",
-]
-
-# Авторизація в Google API через service_account_info (тизькі права, краще для production)
 creds_dict = json.loads(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"))
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+
 credentials = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
 gc = gspread.Client(auth=credentials)
 gc.session = AuthorizedSession(credentials)
 
-
-# Константи та стани для ConversationHandler:
 (
     START_MENU,
     DEPOSIT_PAYMENT,
@@ -66,11 +57,10 @@ gc.session = AuthorizedSession(credentials)
 books_per_page = 10
 locations_per_page = 10
 
-# Змінні для зберігання даних, будуть ініціалізовані при запуску:
 locations = []
 genres = []
 book_data = {}
-rental_price_map = {}  # для різних термінів оренди
+rental_price_map = {}
 
 
 def get_paginated_buttons(items, page, prefix, page_size, add_start_button=False):
@@ -114,9 +104,8 @@ async def create_monopay_invoice(amount: int, description: str, order_id: str) -
 
 
 async def save_order_to_sheets(data: dict) -> bool:
-    # Збереження замовлення у вже відкритий через gspread Google Sheet
-    worksheet = gc.open_by_key(GOOGLE_SHEET_ID).sheet1
     try:
+        worksheet = gc.open_by_key(GOOGLE_SHEET_ID).sheet1
         worksheet.append_row(
             [
                 data.get("location", ""),
@@ -131,13 +120,13 @@ async def save_order_to_sheets(data: dict) -> bool:
         )
         return True
     except Exception as e:
-        logger.error(f"Помилка запису в Google Sheets: {e}")
+        logger.error(f"Помилка запису в Google Sheets: {e}", exc_info=True)
         return False
 
 
 async def get_chat_id_for_order(order_id: str) -> int | None:
-    worksheet = gc.open_by_key(GOOGLE_SHEET_ID).sheet1
     try:
+        worksheet = gc.open_by_key(GOOGLE_SHEET_ID).sheet1
         records = worksheet.get_all_records()
         for row in records:
             if str(row.get("order_id", "")) == str(order_id):
@@ -150,32 +139,14 @@ async def get_chat_id_for_order(order_id: str) -> int | None:
 
 
 def load_data_from_google_sheet():
-    """
-    Завантажує всі дані з Google Sheets та ініціалізує глобальні змінні:
-    - locations
-    - genres
-    - book_data (словник жанр -> список книг)
-    - rental_price_map (з термінами оренди на основі цін з аркуша)
-    """
     global locations, genres, book_data, rental_price_map
-
-    # Відкриваємо Google Sheet по ID
     sh = gc.open_by_key(GOOGLE_SHEET_ID)
     worksheet = sh.sheet1
-
-    # Отримуємо всі записи як список словників
     records = worksheet.get_all_records()
-
-    # Використовуємо pandas для зручності обробки (опціонально)
     df = pd.DataFrame(records)
-
-    # Унікальні локації
+    # Унікальні локації і жанри
     locations = sorted(df['location'].dropna().unique().tolist())
-
-    # Унікальні жанри
     genres = sorted(df['genre'].dropna().unique().tolist())
-
-    # Формуємо словник книг за жанрами
     book_data.clear()
     for genre in genres:
         books = []
@@ -189,8 +160,6 @@ def load_data_from_google_sheet():
             }
             books.append(book)
         book_data[genre] = books
-
-    # Вивантажуємо ціни оренди (припускаємо, що ціни однакові для всіх книг, беремо з першого рядка)
     if not df.empty:
         rental_price_map = {
             7: int(df.iloc[0].get('price_7', 70)),
@@ -201,26 +170,32 @@ def load_data_from_google_sheet():
     logger.info(f"Дані завантажено: {len(locations)} локацій, {len(genres)} жанрів.")
 
 
-# Застосовуємо get_paginated_buttons для жанрів та книг:
-def get_books_paginated(books_list, page):
-    start = page * books_per_page
-    end = start + books_per_page
-    return books_list[start:end], (len(books_list) - 1) // books_per_page
-
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message:
-        context.user_data.clear()
-        keyboard = [
-            [
-                InlineKeyboardButton("Я новий клієнт", callback_data="start:new_client"),
-                InlineKeyboardButton("Я вже користуюсь сервісом", callback_data="start:existing_client"),
-            ]
+    """
+    Обробник команди /start, яка працює в будь-який момент,
+    скидає стан користувача і показує початкове меню.
+    """
+    context.user_data.clear()
+    keyboard = [
+        [
+            InlineKeyboardButton("Я новий клієнт", callback_data="start:new_client"),
+            InlineKeyboardButton("Я вже користуюсь сервісом", callback_data="start:existing_client"),
         ]
-        await update.message.reply_text("Вітаємо! Оберіть, будь ласка, варіант:", reply_markup=InlineKeyboardMarkup(keyboard))
-        return START_MENU
-    else:
-        return await start_menu_handler(update, context)
+    ]
+    if update.message:
+        await update.message.reply_text(
+            "Вітаємо! Оберіть, будь ласка, варіант:", reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    elif update.callback_query:
+        await update.callback_query.answer()
+        try:
+            await update.callback_query.edit_message_text(
+                "Вітаємо! Оберіть, будь ласка, варіант:", reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        except BadRequest as e:
+            if "Message is not modified" not in str(e):
+                raise
+    return START_MENU
 
 
 async def start_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -290,8 +265,7 @@ async def start_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         ]
         try:
             await query.edit_message_text(
-                "Вітаємо! Оберіть, будь ласка, варіант:",
-                reply_markup=InlineKeyboardMarkup(keyboard),
+                "Вітаємо! Оберіть, будь ласка, варіант:", reply_markup=InlineKeyboardMarkup(keyboard)
             )
         except BadRequest as e:
             if "Message is not modified" not in str(e):
@@ -349,7 +323,6 @@ async def choose_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 raise
         return CHOOSE_LOCATION
 
-    # Вибрана локація
     context.user_data["location"] = data.split(":", 1)[1]
     return await show_genres(update, context)
 
@@ -526,7 +499,6 @@ async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     days = int(data.get("days", 7))
     book = data.get("book", {})
-    # Визначаємо ціну оренди залежно від строку (7 або 14 днів)
     price_total = book.get(f'price_{days}', rental_price_map.get(days, 70))
     data["book"]["price"] = price_total
 
@@ -577,9 +549,7 @@ async def confirm_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         logger.error(f"Помилка створення інвойсу MonoPay: {e}")
-        buttons = [
-            [InlineKeyboardButton("🏠 На початок", callback_data="back:start")]
-        ]
+        buttons = [[InlineKeyboardButton("🏠 На початок", callback_data="back:start")]]
         await query.edit_message_text(
             f"Сталася помилка при створенні платежу: {e}",
             reply_markup=InlineKeyboardMarkup(buttons)
@@ -606,8 +576,7 @@ async def go_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         try:
             await query.edit_message_text(
-                "Вітаємо! Оберіть, будь ласка, варіант:",
-                reply_markup=InlineKeyboardMarkup(keyboard),
+                "Вітаємо! Оберіть, будь ласка, варіант:", reply_markup=InlineKeyboardMarkup(keyboard)
             )
         except BadRequest as e:
             if "Message is not modified" not in str(e):
@@ -649,7 +618,6 @@ async def telegram_webhook_handler(request):
 async def init_app():
     global locations, genres, book_data, rental_price_map
 
-    # Завантажуємо дані з Google Sheet при старті бота
     load_data_from_google_sheet()
 
     application = Application.builder().token(BOT_TOKEN).build()
@@ -657,9 +625,18 @@ async def init_app():
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
-            START_MENU: [CallbackQueryHandler(start_menu_handler, pattern=r"^start:.*"), CallbackQueryHandler(go_back, pattern=r"^back:start$")],
-            DEPOSIT_PAYMENT: [CallbackQueryHandler(start_menu_handler, pattern=r"^deposit_done"), CallbackQueryHandler(go_back, pattern=r"^back:start$")],
-            CHOOSE_LOCATION: [CallbackQueryHandler(choose_location, pattern=r"^location.*"), CallbackQueryHandler(go_back, pattern=r"^back:start$")],
+            START_MENU: [
+                CallbackQueryHandler(start_menu_handler, pattern=r"^start:.*"),
+                CallbackQueryHandler(go_back, pattern=r"^back:start$"),
+            ],
+            DEPOSIT_PAYMENT: [
+                CallbackQueryHandler(start_menu_handler, pattern=r"^deposit_done"),
+                CallbackQueryHandler(go_back, pattern=r"^back:start$"),
+            ],
+            CHOOSE_LOCATION: [
+                CallbackQueryHandler(choose_location, pattern=r"^location.*"),
+                CallbackQueryHandler(go_back, pattern=r"^back:start$"),
+            ],
             CHOOSE_GENRE: [
                 CallbackQueryHandler(choose_genre, pattern=r"^genre:.*"),
                 CallbackQueryHandler(go_back, pattern=r"^back:(locations|start)$"),
@@ -673,14 +650,24 @@ async def init_app():
                 CallbackQueryHandler(choose_days, pattern=r"^days:.*"),
                 CallbackQueryHandler(go_back, pattern=r"^back:(books|genres|locations|start)$"),
             ],
-            CHOOSE_RENT_DAYS: [CallbackQueryHandler(days_chosen, pattern=r"^days:\d+$"), CallbackQueryHandler(go_back, pattern=r"^back:start$")],
+            CHOOSE_RENT_DAYS: [
+                CallbackQueryHandler(days_chosen, pattern=r"^days:\d+$"),
+                CallbackQueryHandler(go_back, pattern=r"^back:start$"),
+            ],
             GET_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_name)],
             GET_CONTACT: [MessageHandler(filters.CONTACT | filters.TEXT, get_contact)],
-            CONFIRMATION: [CallbackQueryHandler(confirm_payment, pattern=r"^pay_now$"), CallbackQueryHandler(go_back, pattern=r"^back:start$")],
+            CONFIRMATION: [
+                CallbackQueryHandler(confirm_payment, pattern=r"^pay_now$"),
+                CallbackQueryHandler(go_back, pattern=r"^back:start$"),
+            ],
         },
         fallbacks=[CommandHandler("cancel", lambda u, c: u.message.reply_text("❌ Скасовано."))],
     )
+
     application.add_handler(conv_handler)
+
+    # Додатковий обробник /start на рівні Application для перезапуску з будь-якого стану
+    application.add_handler(CommandHandler("start", start))
 
     await application.initialize()
     await application.start()
