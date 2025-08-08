@@ -371,7 +371,7 @@ async def choose_genre(update: Update, context: ContextTypes.DEFAULT_TYPE):
     genre = query.data.split(":", 1)[1]
     loc = context.user_data.get("location", None)
 
-    # Якщо жанр містить author: — логіку передаємо в choose_author
+    # Якщо жанр починається з author: -- передати обробку в choose_author
     if genre.startswith("author:"):
         return await choose_author(update, context)
 
