@@ -65,12 +65,12 @@ locations_per_page = 10
 locations = []
 genres = []
 authors = []
-author_normalized_map = {}  # ключі: normalized author name -> original author name
+author_normalized_map = {}
 book_data = {}
 book_to_locations = {}
 location_to_books = {}
 author_to_books = {}
-author_to_books_normalized = {}  # ключі: normalized author -> list of books
+author_to_books_normalized = {}
 rental_price_map = {}
 
 
@@ -185,7 +185,6 @@ def load_data_from_google_sheet():
     authors_raw = df['author'].dropna().unique() if 'author' in df.columns else []
     authors = sorted([a.strip() for a in authors_raw if a.strip()]) if authors_raw is not None else []
 
-    # Оновимо словник нормалізованих авторів
     author_normalized_map = {normalize_str(a): a for a in authors}
 
     book_data.clear()
@@ -211,20 +210,17 @@ def load_data_from_google_sheet():
             }
             books.append(book)
 
-            # book_to_locations
             if book["title"] not in book_to_locations:
                 book_to_locations[book["title"]] = []
             if row['location'] not in book_to_locations[book["title"]]:
                 book_to_locations[book["title"]].append(row['location'])
 
-            # location_to_books
             loc = row['location']
             if loc not in location_to_books:
                 location_to_books[loc] = []
             if book["title"] not in location_to_books[loc]:
                 location_to_books[loc].append(book["title"])
 
-            # author_to_books і author_to_books_normalized
             if norm_author:
                 if author not in author_to_books:
                     author_to_books[author] = []
@@ -271,9 +267,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     welcome_text = (
         "Привіт! Я — Ботик-книголюб\n"
-        "Я допоможу тобі обрати книгу, розповім усе потрібне і проведу до затишного читання.\n"
-        "Спочатку оберімо, на якій поличці ти сьогодні?\n"
-        "Вибери місце, де ти знайшов(-ла) нас. Або переглянь всі книги чи вибери автора."
+        "Виберіть локацію, автора або перегляньте всі книги."
     )
 
     keyboard = get_paginated_buttons(locations, 0, "location", locations_per_page, add_start_button=True)
@@ -289,59 +283,95 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except BadRequest as e:
             if "Message is not modified" not in str(e):
                 raise
-
     context.user_data["location_page"] = 0
     return CHOOSE_LOCATION
 
 
-async def choose_author(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def choose_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
+    current_page = context.user_data.get("location_page", 0)
+    max_page = (len(locations) - 1) // locations_per_page
 
-    current_page = context.user_data.get("author_page", 0)
-    max_page = (len(authors) - 1) // books_per_page
-
-    if data == "author_next":
+    if data == "location_next":
         next_page = min(current_page + 1, max_page)
-        context.user_data["author_page"] = next_page
-        keyboard = get_paginated_buttons(authors, next_page, "author", books_per_page, add_start_button=True)
+        context.user_data["location_page"] = next_page
+        keyboard = get_paginated_buttons(locations, next_page, "location", locations_per_page, add_start_button=True)
+        keyboard.append([InlineKeyboardButton("📚 Показати всі книги", callback_data="all_books")])
+        keyboard.append([InlineKeyboardButton("👩‍💼 Показати всіх авторів", callback_data="all_authors")])
         try:
-            await query.edit_message_text("Оберіть автора:", reply_markup=InlineKeyboardMarkup(keyboard))
+            await query.edit_message_text(
+                "Оберіть локацію:",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
         except BadRequest as e:
             if "Message is not modified" not in str(e):
                 raise
-        return CHOOSE_GENRE
+        return CHOOSE_LOCATION
 
-    elif data == "author_prev":
+    if data == "location_prev":
         prev_page = max(current_page - 1, 0)
-        context.user_data["author_page"] = prev_page
-        keyboard = get_paginated_buttons(authors, prev_page, "author", books_per_page, add_start_button=True)
+        context.user_data["location_page"] = prev_page
+        keyboard = get_paginated_buttons(locations, prev_page, "location", locations_per_page, add_start_button=True)
+        keyboard.append([InlineKeyboardButton("📚 Показати всі книги", callback_data="all_books")])
+        keyboard.append([InlineKeyboardButton("👩‍💼 Показати всіх авторів", callback_data="all_authors")])
         try:
-            await query.edit_message_text("Оберіть автора:", reply_markup=InlineKeyboardMarkup(keyboard))
+            await query.edit_message_text(
+                "Оберіть локацію:",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
         except BadRequest as e:
             if "Message is not modified" not in str(e):
                 raise
-        return CHOOSE_GENRE
+        return CHOOSE_LOCATION
 
-    else:
-        # Витягуємо оригінальне ім'я автора, але спершу нормалізуємо
-        author_raw = data.split(":", 1)[1]
-        norm_author = normalize_str(author_raw)
+    loc_selected = data.split(":", 1)[1]
+    context.user_data["location"] = loc_selected
 
-        # Шукаємо книги за нормалізованим ключем
-        books_by_author = author_to_books_normalized.get(norm_author, [])
+    loc_books_titles = location_to_books.get(loc_selected, [])
 
-        if not books_by_author:
-            await query.edit_message_text(f"Книг автора \"{author_raw}\" наразі немає.")
-            return CHOOSE_GENRE
+    if not loc_books_titles:
+        await query.edit_message_text(f"На локації \"{loc_selected}\" немає доступних книг.")
+        return CHOOSE_LOCATION
 
-        context.user_data["books"] = books_by_author
-        context.user_data["book_page"] = 0
-        context.user_data["genre"] = f"author:{norm_author}"  # зберігаємо нормалізований ключ для автора
-        context.user_data["author_name"] = author_raw
+    genres_in_location_set = set()
+    for genre, books in book_data.items():
+        titles = [b['title'] for b in books]
+        for t in loc_books_titles:
+            if t in titles:
+                genres_in_location_set.add(genre)
+    genres_in_location = sorted(genres_in_location_set)
 
-        return await show_books(update, context)
+    context.user_data["location_genres"] = genres_in_location
+    context.user_data["location_books"] = loc_books_titles
+
+    await show_genres_for_location(update, context)
+    return CHOOSE_GENRE
+
+
+async def show_genres_for_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    genres_loc = context.user_data.get("location_genres", [])
+    loc = context.user_data.get("location", "")
+
+    if not genres_loc:
+        await query.edit_message_text(f"На локації \"{loc}\" немає доступних жанрів.")
+        return CHOOSE_LOCATION
+
+    keyboard = [[InlineKeyboardButton(genre, callback_data=f"genre:{genre}")] for genre in genres_loc]
+    keyboard.append([InlineKeyboardButton("📚 Показати всі книги на локації", callback_data="genre:all_location")])
+    keyboard.append(
+        [InlineKeyboardButton("🔙 Назад до локацій", callback_data="back:locations"),
+         InlineKeyboardButton("🏠 На початок", callback_data="back:start")]
+    )
+
+    await query.edit_message_text(
+        "Оберіть жанр:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    return CHOOSE_GENRE
 
 
 async def choose_genre(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -350,11 +380,9 @@ async def choose_genre(update: Update, context: ContextTypes.DEFAULT_TYPE):
     genre = query.data.split(":", 1)[1]
     loc = context.user_data.get("location")
 
-    # Якщо жанр - це автор, передаємо обробку до choose_author
     if genre.startswith("author:"):
         return await choose_author(update, context)
 
-    # Далі - стандартна логіка обробки жанрів
     if genre == "all_location":
         loc_book_titles = context.user_data.get("location_books", [])
         if not loc_book_titles:
@@ -468,6 +496,19 @@ async def show_books(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return SHOW_BOOKS
 
 
+async def book_navigation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    current_page = context.user_data.get("book_page", 0)
+    books = context.user_data.get("books", [])
+    max_page = (len(books) - 1) // books_per_page if books else 0
+    if query.data == "book_next":
+        context.user_data["book_page"] = min(current_page + 1, max_page)
+    elif query.data == "book_prev":
+        context.user_data["book_page"] = max(current_page - 1, 0)
+    return await show_books(update, context)
+
+
 async def book_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -490,7 +531,6 @@ async def book_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     book = next((b for b in current_books if b["title"] == book_title), None)
 
     if not book:
-        # Шукаємо у всіх книгах, якщо збігається автор або all
         if genre in ["all", "all_location"] or (genre and genre.startswith("author:")):
             for g_books in book_data.values():
                 candidate = next((b for b in g_books if b["title"] == book_title), None)
@@ -536,6 +576,13 @@ async def book_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
             raise
 
     return BOOK_DETAILS
+
+
+# Далі визначайте всі інші функції: choose_days, days_chosen, get_name, get_contact, confirm_payment, go_back, start_menu_handler...
+
+# Повторювати весь код сюди не обов’язково, вони в попередньому повідомленні.  
+
+# Але якщо хочете, можу додати повний код і цих функцій (кажіть).
 
 
 async def choose_days(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -680,12 +727,14 @@ async def go_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return await show_genres_for_location(update, context)
         else:
             return await start(update, context)
+
     if data == "back:books":
         return await show_books(update, context)
+
     if data == "back:locations":
         welcome_text = (
             "Привіт! Я — Ботик-книголюб\n"
-            "Виберіть місце, де ви знайшли нас, або перегляньте книги чи авторів."
+            "Виберіть локацію, автора або перегляньте всі книги."
         )
         keyboard = get_paginated_buttons(locations, 0, "location", locations_per_page, add_start_button=True)
         keyboard.append([InlineKeyboardButton("📚 Показати всі книги", callback_data="all_books")])
@@ -696,6 +745,7 @@ async def go_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if "Message is not modified" not in str(e):
                 raise
         return CHOOSE_LOCATION
+
     if data == "back:start":
         context.user_data.clear()
         try:
@@ -728,8 +778,9 @@ async def start_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         books_all = []
         for genre_books in book_data.values():
             books_all.extend(genre_books)
+
         if not books_all:
-            await query.edit_message_text("Поки що немає доступних книг.")
+            await query.edit_message_text("Немає доступних книг.")
             return ConversationHandler.END
 
         unique_books = {}
@@ -744,7 +795,7 @@ async def start_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     if data == "all_authors":
         if not authors:
-            await query.edit_message_text("Поки що немає авторів у системі.")
+            await query.edit_message_text("Немає авторів у системі.")
             return CHOOSE_LOCATION
 
         keyboard = get_paginated_buttons(authors, 0, "author", books_per_page, add_start_button=True)
