@@ -718,7 +718,7 @@ async def success_page_handler(request):
         <script>
             // Автоматичний редірект через 5 секунд
             function goToBot() {{
-                window.location.href = "https://t.me/{os.getenv('BOT_USERNAME', '').lstrip('@')}";
+                window.location.href = "https://t.me/{os.getenv('silent_shelf_bot', '').lstrip('@')}";
             }}
             setTimeout(goToBot, 5000);
         </script>
@@ -902,3 +902,4 @@ if __name__ == "__main__":
         logger.info("Shutting down...")
         loop.run_until_complete(application.stop())
         loop.run_until_complete(application.shutdown())
+
