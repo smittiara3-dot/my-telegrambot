@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MONOPAY_TOKEN = os.getenv("MONOPAY_TOKEN")
 MONOPAY_WEBHOOK_SECRET = os.getenv("MONOPAY_WEBHOOK_SECRET", None)
-WEBHOOK_URL = os.getenv("WEBHOOK_URL").rstrip("/")  # Без зайвих слешів
+WEBHOOK_URL = os.getenv("WEBHOOK_URL").rstrip("/")
 PORT = int(os.getenv("PORT", 8443))
 
 GOOGLE_SHEET_ID_LOCATIONS = os.getenv("GOOGLE_SHEET_ID_LOCATIONS")
@@ -72,10 +72,8 @@ author_to_books = {}
 author_to_books_normalized = {}
 rental_price_map = {}
 
-
 def normalize_str(s: str) -> str:
     return s.strip().lower() if s else ""
-
 
 def get_paginated_buttons(items, page, prefix, page_size, add_start_button=False):
     start = page * page_size
@@ -92,11 +90,9 @@ def get_paginated_buttons(items, page, prefix, page_size, add_start_button=False
         buttons.append([InlineKeyboardButton("🏠 На початок", callback_data="back:start")])
     return buttons
 
-
 def make_book_callback_data(title: str) -> str:
     h = hashlib.sha256(title.encode('utf-8')).hexdigest()[:16]
     return f"book:{h}"
-
 
 async def create_monopay_invoice(amount: int, description: str, order_id: str) -> str:
     url = "https://api.monobank.ua/api/merchant/invoice/create"
@@ -120,7 +116,6 @@ async def create_monopay_invoice(amount: int, description: str, order_id: str) -
             else:
                 logger.error(f"MonoPay invoice creation error: {resp_json}")
                 raise Exception(f"Помилка створення інвойсу MonoPay: {resp_json}")
-
 
 async def save_order_to_sheets(data: dict) -> bool:
     try:
@@ -156,12 +151,10 @@ async def save_order_to_sheets(data: dict) -> bool:
         logger.error(f"Помилка запису в Google Sheets: {e}", exc_info=True)
         return False
 
-
 async def get_chat_id_for_order(order_id: str) -> int | None:
     try:
         worksheet = gc.open_by_key(GOOGLE_SHEET_ID_ORDERS).sheet1
         records = worksheet.get_all_records()
-
         for row in records:
             if str(row.get("order_id", "")) == str(order_id):
                 chat_id = row.get("chat_id")
@@ -170,7 +163,6 @@ async def get_chat_id_for_order(order_id: str) -> int | None:
     except Exception as e:
         logger.error(f"Error getting chat_id for order: {e}")
     return None
-
 
 def load_data_from_google_sheet():
     global locations, genres, authors, book_data, rental_price_map
@@ -232,11 +224,16 @@ def load_data_from_google_sheet():
 
     logger.info(f"Дані завантажено: {len(locations)} локацій, {len(genres)} жанрів.")
 
+# --- Обробники ---
 
-# ---- Повний набір обробників, включно з start, choose_location, show_genres_for_location, choose_genre, show_books,
-# book_navigation, book_detail, choose_days, days_chosen, get_name, get_contact, confirm_payment, go_back, start_menu_handler
-# скопійовані повністю із попереднього коду без змін ----
-
+async def reload_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        load_data_from_google_sheet()
+        await update.message.reply_text("Дані з Google Sheets успішно оновлено!")
+        logger.info("Користувач ініціював оновлення даних командою /reload")
+    except Exception as e:
+        logger.error(f"Помилка оновлення даних: {e}", exc_info=True)
+        await update.message.reply_text("Сталася помилка при оновленні даних. Спробуйте пізніше.")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
@@ -265,7 +262,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 raise
     context.user_data["location_page"] = 0
     return CHOOSE_LOCATION
-
 
 async def choose_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -304,7 +300,6 @@ async def choose_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 raise
         return CHOOSE_LOCATION
 
-    # Вибір локації
     loc_selected = data.split(":", 1)[1]
     context.user_data["location"] = loc_selected
 
@@ -328,7 +323,6 @@ async def choose_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await show_genres_for_location(update, context)
     return CHOOSE_GENRE
 
-
 async def show_genres_for_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -351,7 +345,6 @@ async def show_genres_for_location(update: Update, context: ContextTypes.DEFAULT
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
     return CHOOSE_GENRE
-
 
 async def choose_genre(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -421,7 +414,6 @@ async def choose_genre(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_books(update, context)
         return SHOW_BOOKS
 
-
 async def show_books(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -471,7 +463,6 @@ async def show_books(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     return SHOW_BOOKS
 
-
 async def book_navigation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -483,7 +474,6 @@ async def book_navigation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "book_prev":
         context.user_data["book_page"] = max(current_page - 1, 0)
     return await show_books(update, context)
-
 
 async def book_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -553,7 +543,6 @@ async def book_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     return BOOK_DETAILS
 
-
 async def choose_days(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -572,7 +561,6 @@ async def choose_days(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if "Message is not modified" not in str(e):
             raise
     return CHOOSE_RENT_DAYS
-
 
 async def days_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -594,14 +582,12 @@ async def days_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
             raise
     return GET_NAME
 
-
 async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["name"] = update.message.text.strip()
     button = KeyboardButton("📱 Поділитися номером", request_contact=True)
     reply_markup = ReplyKeyboardMarkup([[button]], one_time_keyboard=True, resize_keyboard=True)
     await update.message.reply_text("Надішліть номер телефону:", reply_markup=reply_markup)
     return GET_CONTACT
-
 
 async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     contact = update.message.contact.phone_number if update.message.contact else update.message.text.strip()
@@ -651,7 +637,6 @@ async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
     return CONFIRMATION
 
-
 async def confirm_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -676,7 +661,6 @@ async def confirm_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
         buttons = [[InlineKeyboardButton("🏠 На початок", callback_data="back:start")]]
         await query.edit_message_text(f"Помилка при створенні платежу: {e}", reply_markup=InlineKeyboardMarkup(buttons))
     return CONFIRMATION
-
 
 async def go_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -726,7 +710,6 @@ async def go_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 raise
         return CHOOSE_LOCATION
 
-
 async def start_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -753,7 +736,6 @@ async def start_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     await query.answer("Невідома дія")
     return CHOOSE_LOCATION
-
 
 async def monopay_webhook(request):
     try:
@@ -790,7 +772,6 @@ async def monopay_webhook(request):
         logger.exception("Error in MonoPay webhook:")
         return web.Response(text=f"Error: {e}", status=500)
 
-
 async def telegram_webhook_handler(request):
     app = request.app
     bot_app = app.bot_updater
@@ -799,9 +780,7 @@ async def telegram_webhook_handler(request):
     await bot_app.process_update(update)
     return web.Response(text="OK", status=200)
 
-
 async def success_page_handler(request):
-    # Заміни silent_shelf_bote на свій реальний юзернейм бота (без @)
     html_content = """
     <!DOCTYPE html>
     <html lang="uk">
@@ -812,7 +791,7 @@ async def success_page_handler(request):
     <body style="font-family: Arial, sans-serif; text-align: center; margin-top: 50px;">
         <h1>Оплата успішна! Дякуємо за оренду.</h1>
         <p>
-            <a href="https://t.me/silent_shelf_bote" style="font-size: 18px; color: #0088cc; text-decoration: none;">
+            <a href="https://t.me/silent_shelf_bote" style="font-size:18px; color:#0088cc; text-decoration:none;">
                 Повернутися в бот
             </a>
         </p>
@@ -820,7 +799,6 @@ async def success_page_handler(request):
     </html>
     """
     return web.Response(text=html_content, content_type='text/html')
-
 
 async def init_app():
     load_data_from_google_sheet()
@@ -860,7 +838,6 @@ async def init_app():
         },
         fallbacks=[CommandHandler("cancel", lambda update, context: update.message.reply_text("❌ Скасовано."))],
     )
-
     application.add_handler(conv_handler)
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("reload", reload_data))
@@ -887,7 +864,6 @@ async def init_app():
     logger.info(f"Telegram webhook set to {WEBHOOK_URL}/telegram_webhook")
 
     return app, application
-
 
 if __name__ == "__main__":
     loop = asyncio.new_event_loop()
