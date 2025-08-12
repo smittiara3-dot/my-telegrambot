@@ -523,12 +523,13 @@ async def book_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         f"Ви обрали чудову книгу!\n"
         f"Доступна на поличках: {loc_text}\n\n"
-        "Приємного читання!"
+        "Приємного читання!\n\n"
+        "Оберіть термін оренди:"
     )
 
     buttons = [
-        InlineKeyboardButton("7 днів", callback_data="days:7"),
-        InlineKeyboardButton("14 днів", callback_data="days:14"),
+        [InlineKeyboardButton("7 днів", callback_data="days:7")],
+        [InlineKeyboardButton("14 днів", callback_data="days:14")],
         InlineKeyboardButton("🔙 До книг", callback_data="back:books"),
         InlineKeyboardButton("🔙 До жанрів", callback_data="back:genres"),
         InlineKeyboardButton("🔙 До локацій", callback_data="back:locations"),
@@ -536,62 +537,19 @@ async def book_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
 
     try:
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([buttons]))
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons))
     except BadRequest as e:
         if "Message is not modified" not in str(e):
             raise
 
     return BOOK_DETAILS
 
-async def choose_days(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    buttons = [
-        InlineKeyboardButton("7 днів", callback_data="days:7"),
-        InlineKeyboardButton("14 днів", callback_data="days:14"),
-        InlineKeyboardButton("🔙 До книг", callback_data="back:books"),
-        InlineKeyboardButton("🔙 До жанрів", callback_data="back:genres"),
-        InlineKeyboardButton("🔙 До локацій", callback_data="back:locations"),
-        InlineKeyboardButton("🏠 На початок", callback_data="back:start"),
-    ]
-    try:
-        await query.edit_message_text("Оберіть термін оренди:", reply_markup=InlineKeyboardMarkup([buttons]))
-    except BadRequest as e:
-        if "Message is not modified" not in str(e):
-            raise
-    return CHOOSE_RENT_DAYS
-
+# Оновлений handler: після вибору днів одразу генеруємо інвойс і показуємо посилання на оплату
 async def days_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     days = int(query.data.split(":")[1])
     context.user_data["days"] = str(days)
-
-    rules_text = (
-        "Перш ніж книга вирушить з тобою, розповім кілька простих правил:\n"
-        "• Бронь діє 14 днів з моменту оплати\n"
-        "• Книга повертається на ту ж поличку, що й була\n"
-        "• Будь ласка, читай акуратно без записів\n"
-        "А тепер дещо про тебе: ім'я і номер телефону, будь ласка."
-    )
-    try:
-        await query.edit_message_text(rules_text)
-    except BadRequest as e:
-        if "Message is not modified" not in str(e):
-            raise
-    return GET_NAME
-
-async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["name"] = update.message.text.strip()
-    button = KeyboardButton("📱 Поділитися номером", request_contact=True)
-    reply_markup = ReplyKeyboardMarkup([[button]], one_time_keyboard=True, resize_keyboard=True)
-    await update.message.reply_text("Надішліть номер телефону:", reply_markup=reply_markup)
-    return GET_CONTACT
-
-async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    contact = update.message.contact.phone_number if update.message.contact else update.message.text.strip()
-    context.user_data["contact"] = contact
 
     data = context.user_data
     location = data.get("location")
@@ -606,9 +564,8 @@ async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data["location"] = location
 
     data["order_id"] = str(uuid.uuid4())
-    data["chat_id"] = update.effective_chat.id
+    data["chat_id"] = query.message.chat.id
 
-    days = int(data.get("days", 7))
     price_total = book.get(f'price_{days}', rental_price_map.get(days, 70))
     data["book"]["price"] = price_total
 
@@ -616,51 +573,187 @@ async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     saved = await save_order_to_sheets(data)
     if not saved:
-        await update.message.reply_text("Проблема із збереженням замовлення. Спробуйте пізніше.")
+        await query.edit_message_text("Проблема із збереженням замовлення. Спробуйте пізніше.")
         return ConversationHandler.END
 
-    text = (
-        f"📚 *Ваше замовлення:*\n"
-        f"🏠 Локація: {location}\n"
-        f"🖋 Автор: {author}\n"
-        f"📖 Книга: {book.get('title')}\n"
-        f"🗂 Жанр: {genre}\n"
-        f"📆 Днів: {days}\n"
-        f"👤 Ім'я: {data['name']}\n"
-        f"📞 Контакт: {data['contact']}\n"
-        f"\nСума до оплати: *{price_total} грн*"
-    )
-    buttons = [
-        [InlineKeyboardButton("💳 Оплатити", callback_data="pay_now")],
-        [InlineKeyboardButton("🏠 На початок", callback_data="back:start")],
-    ]
-    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+    description = f"Оренда книги {data['book']['title']} на {days} днів"
+
+    try:
+        invoice_url = await create_monopay_invoice(price_total, description, data["order_id"])
+
+        buttons = [
+            [InlineKeyboardButton("💳 Оплатити MonoPay", url=invoice_url)],
+            [InlineKeyboardButton("🏠 На початок", callback_data="back:start")],
+        ]
+
+        text = (
+            f"📚 Ваше замовлення:\n"
+            f"🏠 Локація: {location}\n"
+            f"🖋 Автор: {author}\n"
+            f"📖 Книга: {book.get('title')}\n"
+            f"🗂 Жанр: {genre}\n"
+            f"📆 Днів: {days}\n"
+            f"👤 Ім'я: {data.get('name', 'не вказано')}\n"
+            f"📞 Контакт: {data.get('contact', 'не вказано')}\n"
+            f"\nСума до оплати: *{price_total} грн*\n\n"
+            f"Натисніть кнопку нижче, щоб оплатити."
+        )
+
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+
+    except Exception as e:
+        logger.error(f"Помилка створення інвойсу MonoPay: {e}")
+        buttons = [[InlineKeyboardButton("🏠 На початок", callback_data="back:start")]]
+        await query.edit_message_text(f"Помилка при створенні платежу: {e}", reply_markup=InlineKeyboardMarkup(buttons))
+        return ConversationHandler.END
+
     return CONFIRMATION
 
-async def confirm_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
+async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["name"] = update.message.text.strip()
+    button = KeyboardButton("📱 Поділитися номером", request_contact=True)
+    reply_markup = ReplyKeyboardMarkup([[button]], one_time_keyboard=True, resize_keyboard=True)
+    await update.message.reply_text("Надішліть номер телефону:", reply_markup=reply_markup)
+    return GET_CONTACT
+
+async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    contact = update.message.contact.phone_number if update.message.contact else update.message.text.strip()
+    context.user_data["contact"] = contact
+
+    # Після отримання контакту одразу переходимо до оплати (якщо ми в Confirm? Але у нашій логіці краще після контакту пропонувати оплату)
+
+    # Замість показувати форму підтвердження з оплатою окремо, редагуємо повідомлення з посиланням на оплату
     data = context.user_data
     days = int(data.get("days", 7))
     price_total = data.get("book", {}).get(f"price_{days}", rental_price_map.get(days, 70))
     description = f"Оренда книги {data['book']['title']} на {days} днів"
     order_id = data["order_id"]
+
     try:
         invoice_url = await create_monopay_invoice(price_total, description, order_id)
+
+        text = (
+            f"📚 Ваше замовлення:\n"
+            f"🏠 Локація: {data.get('location', '')}\n"
+            f"🖋 Автор: {data['book'].get('author', '')}\n"
+            f"📖 Книга: {data['book'].get('title')}\n"
+            f"🗂 Жанр: {data.get('genre', '')}\n"
+            f"📆 Днів: {days}\n"
+            f"👤 Ім'я: {data.get('name')}\n"
+            f"📞 Контакт: {data.get('contact')}\n"
+            f"\nСума до оплати: *{price_total} грн*\n\n"
+            f"Натисніть кнопку нижче, щоб оплатити."
+        )
+
         buttons = [
-            [InlineKeyboardButton("Оплатити MonoPay", url=invoice_url)],
+            [InlineKeyboardButton("💳 Оплатити MonoPay", url=invoice_url)],
             [InlineKeyboardButton("🏠 На початок", callback_data="back:start")],
         ]
-        await query.edit_message_text(
-            "Оплатіть за посиланням або поверніться в меню:",
-            reply_markup=InlineKeyboardMarkup(buttons),
-            parse_mode="Markdown"
-        )
+
+        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+
     except Exception as e:
         logger.error(f"Помилка створення інвойсу MonoPay: {e}")
-        buttons = [[InlineKeyboardButton("🏠 На початок", callback_data="back:start")]]
-        await query.edit_message_text(f"Помилка при створенні платежу: {e}", reply_markup=InlineKeyboardMarkup(buttons))
+        await update.message.reply_text(f"Помилка при створенні платежу: {e}")
+
     return CONFIRMATION
+
+# Обробник вебхуку MonoPay
+async def monopay_webhook(request):
+    try:
+        body = await request.text()
+        data = json.loads(body)
+        signature = request.headers.get("X-Signature-MonoPay")
+
+        if MONOPAY_WEBHOOK_SECRET and signature:
+            computed_signature = hmac.new(
+                MONOPAY_WEBHOOK_SECRET.encode(),
+                body.encode(),
+                hashlib.sha256
+            ).hexdigest()
+            if not hmac.compare_digest(computed_signature, signature):
+                logger.warning("Invalid MonoPay webhook signature")
+                return web.Response(text="Invalid signature", status=403)
+
+        order_id = data.get("orderId")
+        payment_status = data.get("status")
+        logger.info(f"MonoPay webhook received: orderId={order_id}, status={payment_status}")
+
+        if payment_status == "PAID":
+            chat_id = await get_chat_id_for_order(order_id)
+            if chat_id:
+                # Надсилаємо повідомлення в телеграм
+                text = "✅ Дякую, оплата пройшла успішно. Ми дуже вдячні що скористались нашим сервісом."
+                buttons = [
+                    [InlineKeyboardButton("🏠 На початок", callback_data="back:start")]
+                ]
+                try:
+                    await request.app.bot_updater.bot.send_message(
+                        chat_id,
+                        text,
+                        reply_markup=InlineKeyboardMarkup(buttons)
+                    )
+                except Exception as e:
+                    logger.error(f"Не вдалося надіслати повідомлення в Telegram: {e}")
+            else:
+                logger.warning(f"Chat ID for order {order_id} not found")
+
+        return web.Response(text="OK")
+    except Exception as e:
+        logger.exception("Error in MonoPay webhook:")
+        return web.Response(text=f"Error: {e}", status=500)
+
+async def telegram_webhook_handler(request):
+    app = request.app
+    bot_app = app.bot_updater
+    body = await request.text()
+    update = Update.de_json(json.loads(body), bot_app.bot)
+    await bot_app.process_update(update)
+    return web.Response(text="OK", status=200)
+
+# Оновлена сторінка успішної оплати із автоматичним переходом у бот через посилання
+async def success_page_handler(request):
+    html_content = f"""
+    <!DOCTYPE html>
+    <html lang="uk">
+    <head>
+        <meta charset="UTF-8" />
+        <title>Оплата успішна</title>
+        <script>
+            // Автоматичний редірект через 5 секунд
+            function goToBot() {{
+                window.location.href = "https://t.me/{os.getenv('BOT_USERNAME', '').lstrip('@')}";
+            }}
+            setTimeout(goToBot, 5000);
+        </script>
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                text-align: center;
+                margin-top: 50px;
+            }}
+            a.button {{
+                display: inline-block;
+                padding: 10px 20px;
+                font-size: 18px;
+                color: #fff;
+                background-color: #0088cc;
+                text-decoration: none;
+                border-radius: 5px;
+                margin-top: 20px;
+            }}
+        </style>
+    </head>
+    <body>
+        <h1>Оплата успішна! Дякуємо за оренду.</h1>
+        <p>Через 5 секунд ви автоматично перейдете в бот.</p>
+        <p>
+            <a href="https://t.me/{os.getenv('BOT_USERNAME', '').lstrip('@')}" class="button">Повернутися в бот зараз</a>
+        </p>
+    </body>
+    </html>
+    """
+    return web.Response(text=html_content, content_type='text/html')
 
 async def go_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -737,69 +830,6 @@ async def start_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await query.answer("Невідома дія")
     return CHOOSE_LOCATION
 
-async def monopay_webhook(request):
-    try:
-        body = await request.text()
-        data = json.loads(body)
-        signature = request.headers.get("X-Signature-MonoPay")
-
-        if MONOPAY_WEBHOOK_SECRET and signature:
-            computed_signature = hmac.new(
-                MONOPAY_WEBHOOK_SECRET.encode(),
-                body.encode(),
-                hashlib.sha256
-            ).hexdigest()
-            if not hmac.compare_digest(computed_signature, signature):
-                logger.warning("Invalid MonoPay webhook signature")
-                return web.Response(text="Invalid signature", status=403)
-
-        order_id = data.get("orderId")
-        payment_status = data.get("status")
-        logger.info(f"MonoPay webhook received: orderId={order_id}, status={payment_status}")
-
-        if payment_status == "PAID":
-            chat_id = await get_chat_id_for_order(order_id)
-            if chat_id:
-                await request.app.bot_updater.bot.send_message(
-                    chat_id,
-                    f"✅ Оплата замовлення {order_id} успішна! Дякуємо за оренду ☕"
-                )
-            else:
-                logger.warning(f"Chat ID for order {order_id} not found")
-
-        return web.Response(text="OK")
-    except Exception as e:
-        logger.exception("Error in MonoPay webhook:")
-        return web.Response(text=f"Error: {e}", status=500)
-
-async def telegram_webhook_handler(request):
-    app = request.app
-    bot_app = app.bot_updater
-    body = await request.text()
-    update = Update.de_json(json.loads(body), bot_app.bot)
-    await bot_app.process_update(update)
-    return web.Response(text="OK", status=200)
-
-async def success_page_handler(request):
-    html_content = """
-    <!DOCTYPE html>
-    <html lang="uk">
-    <head>
-        <meta charset="UTF-8" />
-        <title>Оплата успішна</title>
-    </head>
-    <body style="font-family: Arial, sans-serif; text-align: center; margin-top: 50px;">
-        <h1>Оплата успішна! Дякуємо за оренду.</h1>
-        <p>
-            <a href="https://t.me/silent_shelf_bot" style="font-size:18px; color:#0088cc; text-decoration:none;">
-                Повернутися в бот
-            </a>
-        </p>
-    </body>
-    </html>
-    """
-    return web.Response(text=html_content, content_type='text/html')
-
 async def init_app():
     load_data_from_google_sheet()
     application = Application.builder().token(BOT_TOKEN).build()
@@ -832,7 +862,7 @@ async def init_app():
             GET_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_name)],
             GET_CONTACT: [MessageHandler(filters.CONTACT | filters.TEXT, get_contact)],
             CONFIRMATION: [
-                CallbackQueryHandler(confirm_payment, pattern=r"^pay_now$"),
+                # В цьому режимі оплата йде одразу, тому тут обробник pay_now не потрібен
                 CallbackQueryHandler(go_back, pattern=r"^back:start$"),
             ],
         },
@@ -877,4 +907,3 @@ if __name__ == "__main__":
         logger.info("Shutting down...")
         loop.run_until_complete(application.stop())
         loop.run_until_complete(application.shutdown())
-
