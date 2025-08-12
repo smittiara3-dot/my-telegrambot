@@ -791,7 +791,7 @@ async def success_page_handler(request):
     <body style="font-family: Arial, sans-serif; text-align: center; margin-top: 50px;">
         <h1>Оплата успішна! Дякуємо за оренду.</h1>
         <p>
-            <a href="https://t.me/silent_shelf_bote" style="font-size:18px; color:#0088cc; text-decoration:none;">
+            <a href="https://t.me/silent_shelf_bot" style="font-size:18px; color:#0088cc; text-decoration:none;">
                 Повернутися в бот
             </a>
         </p>
@@ -877,3 +877,4 @@ if __name__ == "__main__":
         logger.info("Shutting down...")
         loop.run_until_complete(application.stop())
         loop.run_until_complete(application.shutdown())
+
