@@ -530,10 +530,10 @@ async def book_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     buttons = [
         [InlineKeyboardButton("7 днів", callback_data="days:7")],
         [InlineKeyboardButton("14 днів", callback_data="days:14")],
-        InlineKeyboardButton("🔙 До книг", callback_data="back:books"),
-        InlineKeyboardButton("🔙 До жанрів", callback_data="back:genres"),
-        InlineKeyboardButton("🔙 До локацій", callback_data="back:locations"),
-        InlineKeyboardButton("🏠 На початок", callback_data="back:start"),
+        [InlineKeyboardButton("🔙 До книг", callback_data="back:books")],
+        [InlineKeyboardButton("🔙 До жанрів", callback_data="back:genres")],
+        [InlineKeyboardButton("🔙 До локацій", callback_data="back:locations")],
+        [InlineKeyboardButton("🏠 На початок", callback_data="back:start")],
     ]
 
     try:
@@ -620,9 +620,6 @@ async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     contact = update.message.contact.phone_number if update.message.contact else update.message.text.strip()
     context.user_data["contact"] = contact
 
-    # Після отримання контакту одразу переходимо до оплати (якщо ми в Confirm? Але у нашій логіці краще після контакту пропонувати оплату)
-
-    # Замість показувати форму підтвердження з оплатою окремо, редагуємо повідомлення з посиланням на оплату
     data = context.user_data
     days = int(data.get("days", 7))
     price_total = data.get("book", {}).get(f"price_{days}", rental_price_map.get(days, 70))
@@ -682,7 +679,6 @@ async def monopay_webhook(request):
         if payment_status == "PAID":
             chat_id = await get_chat_id_for_order(order_id)
             if chat_id:
-                # Надсилаємо повідомлення в телеграм
                 text = "✅ Дякую, оплата пройшла успішно. Ми дуже вдячні що скористались нашим сервісом."
                 buttons = [
                     [InlineKeyboardButton("🏠 На початок", callback_data="back:start")]
@@ -862,7 +858,6 @@ async def init_app():
             GET_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_name)],
             GET_CONTACT: [MessageHandler(filters.CONTACT | filters.TEXT, get_contact)],
             CONFIRMATION: [
-                # В цьому режимі оплата йде одразу, тому тут обробник pay_now не потрібен
                 CallbackQueryHandler(go_back, pattern=r"^back:start$"),
             ],
         },
