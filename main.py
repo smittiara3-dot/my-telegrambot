@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MONOPAY_TOKEN = os.getenv("MONOPAY_TOKEN")
 MONOPAY_WEBHOOK_SECRET = os.getenv("MONOPAY_WEBHOOK_SECRET", None)
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL").rstrip("/")  # Зрізаємо зайві / наприкінці
 PORT = int(os.getenv("PORT", 8443))
 
 GOOGLE_SHEET_ID_LOCATIONS = os.getenv("GOOGLE_SHEET_ID_LOCATIONS")
@@ -63,7 +63,7 @@ locations_per_page = 10
 
 locations = []
 genres = []
-authors = []  # автори у цьому варіанті більше не використовуються
+authors = []
 author_normalized_map = {}
 book_data = {}
 book_to_locations = {}
@@ -109,7 +109,7 @@ async def create_monopay_invoice(amount: int, description: str, order_id: str) -
         "currency": 980,
         "description": description,
         "orderId": order_id,
-        "redirectUrl": f"{WEBHOOK_URL}/success",
+        "redirectUrl": f"{WEBHOOK_URL}/success",            # Тепер тут впевнено без подвійних слешів
         "webHookUrl": f"{WEBHOOK_URL}/monopay_callback",
     }
     async with ClientSession() as session:
@@ -137,6 +137,7 @@ async def save_order_to_sheets(data: dict) -> bool:
 
         order_datetime = datetime.now().isoformat(sep=' ', timespec='seconds')
 
+        # Додаємо order_id і chat_id для пошуку у webhook
         worksheet.append_row(
             [
                 location_str,
@@ -147,6 +148,8 @@ async def save_order_to_sheets(data: dict) -> bool:
                 data.get("name", ""),
                 data.get("contact", ""),
                 order_datetime,
+                data.get("order_id", ""),
+                data.get("chat_id", ""),
             ]
         )
         return True
@@ -159,6 +162,8 @@ async def get_chat_id_for_order(order_id: str) -> int | None:
     try:
         worksheet = gc.open_by_key(GOOGLE_SHEET_ID_ORDERS).sheet1
         records = worksheet.get_all_records()
+
+        # Шукаємо у створених колонках order_id та chat_id
         for row in records:
             if str(row.get("order_id", "")) == str(order_id):
                 chat_id = row.get("chat_id")
@@ -181,7 +186,6 @@ def load_data_from_google_sheet():
     locations = sorted(df['location'].dropna().unique().tolist())
     genres = sorted(df['genre'].dropna().unique().tolist())
 
-    # видаляємо обробку авторів, оскільки ми не показуємо їх зараз
     authors.clear()
     author_normalized_map.clear()
     author_to_books.clear()
@@ -256,7 +260,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = get_paginated_buttons(locations, 0, "location", locations_per_page, add_start_button=True)
     keyboard.append([InlineKeyboardButton("📚 Показати всі книги", callback_data="all_books")])
-    # Прибрано кнопку "👩‍💼 Показати всіх авторів"
 
     if update.message:
         await update.message.reply_text(welcome_text, reply_markup=InlineKeyboardMarkup(keyboard))
@@ -361,8 +364,6 @@ async def choose_genre(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     genre = query.data.split(":", 1)[1]
     loc = context.user_data.get("location")
-
-    # Прибрано перевірку та виклик choose_author, оскільки авторів немає
 
     if genre == "all_location":
         loc_book_titles = context.user_data.get("location_books", [])
@@ -618,8 +619,6 @@ async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     author = book.get("author", "")
     genre = data.get("genre")
 
-    # Прибрано перевірки і корекції жанру та автора, лишаємо як є
-
     if not location:
         book_title = book.get("title", "")
         locations_list = book_to_locations.get(book_title, [])
@@ -758,77 +757,8 @@ async def start_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         return await show_books(update, context)
 
-    # Прибрано обробку all_authors
-
     await query.answer("Невідома дія")
     return CHOOSE_LOCATION
-
-
-async def init_app():
-    load_data_from_google_sheet()
-
-    application = Application.builder().token(BOT_TOKEN).build()
-
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
-        states={
-            START_MENU: [
-                CallbackQueryHandler(start_menu_handler, pattern=r"^(all_books)$"),
-            ],
-            CHOOSE_LOCATION: [
-                CallbackQueryHandler(choose_location, pattern=r"^location.*"),
-                CallbackQueryHandler(start_menu_handler, pattern=r"^(all_books)$"),
-                CallbackQueryHandler(go_back, pattern=r"^back:(start|locations)$"),
-            ],
-            CHOOSE_GENRE: [
-                CallbackQueryHandler(choose_genre, pattern=r"^genre:.*"),
-                CallbackQueryHandler(go_back, pattern=r"^back:(locations|start|genres)$"),
-            ],
-            SHOW_BOOKS: [
-                CallbackQueryHandler(book_navigation, pattern=r"^book_(next|prev)$"),
-                CallbackQueryHandler(book_detail, pattern=r"^book:.*"),
-                CallbackQueryHandler(go_back, pattern=r"^back:(genres|locations|start)$"),
-            ],
-            BOOK_DETAILS: [
-                CallbackQueryHandler(days_chosen, pattern=r"^days:\d+$"),
-                CallbackQueryHandler(go_back, pattern=r"^back:(books|genres|locations|start)$"),
-            ],
-            CHOOSE_RENT_DAYS: [],
-            GET_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_name)],
-            GET_CONTACT: [MessageHandler(filters.CONTACT | filters.TEXT, get_contact)],
-            CONFIRMATION: [
-                CallbackQueryHandler(confirm_payment, pattern=r"^pay_now$"),
-                CallbackQueryHandler(go_back, pattern=r"^back:start$"),
-            ],
-        },
-        fallbacks=[CommandHandler("cancel", lambda update, context: update.message.reply_text("❌ Скасовано."))],
-    )
-
-    application.add_handler(conv_handler)
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("reload", reload_data))
-
-    await application.initialize()
-    await application.start()
-
-    app = web.Application()
-    app.router.add_get("/", lambda request: web.Response(text="OK", status=200))
-    app.router.add_post("/telegram_webhook", telegram_webhook_handler)
-    app.router.add_post("/monopay_callback", monopay_webhook)
-
-    app.bot_updater = application
-
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", PORT)
-    await site.start()
-
-    await application.bot.set_webhook(f"{WEBHOOK_URL.rstrip('/')}/telegram_webhook")
-
-    logger.info(f"Server started on port {PORT}")
-    logger.info(f"Telegram webhook set to {WEBHOOK_URL.rstrip('/')}/telegram_webhook")
-
-    return app, application
 
 
 async def monopay_webhook(request):
@@ -836,17 +766,27 @@ async def monopay_webhook(request):
         body = await request.text()
         data = json.loads(body)
         signature = request.headers.get("X-Signature-MonoPay")
+
         if MONOPAY_WEBHOOK_SECRET and signature:
             computed_signature = hmac.new(MONOPAY_WEBHOOK_SECRET.encode(), body.encode(), hashlib.sha256).hexdigest()
             if not hmac.compare_digest(computed_signature, signature):
                 logger.warning("Invalid MonoPay webhook signature")
                 return web.Response(text="Invalid signature", status=403)
+
         order_id = data.get("orderId")
         payment_status = data.get("status")
         logger.info(f"MonoPay webhook received: orderId={order_id}, status={payment_status}")
-        chat_id = await get_chat_id_for_order(order_id)
-        if payment_status == "PAID" and chat_id:
-            await request.app.bot_updater.bot.send_message(chat_id, f"✅ Оплата замовлення {order_id} успішна! Дякуємо за оренду ☕")
+
+        if payment_status == "PAID":
+            chat_id = await get_chat_id_for_order(order_id)
+            if chat_id:
+                await request.app.bot_updater.bot.send_message(
+                    chat_id,
+                    f"✅ Оплата замовлення {order_id} успішна! Дякуємо за оренду ☕"
+                )
+            else:
+                logger.warning(f"Chat ID for order {order_id} not found")
+
         return web.Response(text="OK")
     except Exception as e:
         logger.exception("Error in MonoPay webhook:")
@@ -862,15 +802,19 @@ async def telegram_webhook_handler(request):
     return web.Response(text="OK", status=200)
 
 
-if __name__ == "__main__":
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
-    app, application = loop.run_until_complete(init_app())
-
-    try:
-        loop.run_forever()
-    except KeyboardInterrupt:
-        logger.info("Shutting down...")
-        loop.run_until_complete(application.stop())
-        loop.run_until_complete(application.shutdown())
+# --- Новий handler для /success --- #
+async def success_page_handler(request):
+    html_content = """
+    <!DOCTYPE html>
+    <html lang="uk">
+    <head>
+        <meta charset="UTF-8" />
+        <title>Оплата успішна</title>
+    </head>
+    <body style="font-family: Arial, sans-serif; text-align: center; margin-top: 50px;">
+        <h1>Оплата успішна! Дякуємо за оренду.</h1>
+        <p><a href="https://t.me/silent_shelf_bote" style="font-size: 18px; color: #0088cc; text-decoration: none;">Повернутися в бот</a></p>
+    </body>
+    </html>
+    """
+    # Обов’язково заміни YourBotUsername на свій юзернейм бота без @
