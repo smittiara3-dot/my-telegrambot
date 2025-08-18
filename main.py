@@ -444,7 +444,6 @@ async def book_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     author = book.get("author", "Невідомий автор")
     title = book.get("title", "Без назви")
     desc = book.get("desc", "Опис відсутній")
-    # Жанр беремо з user_data - він зберігається при виборі жанру
     book_genre = context.user_data.get("genre", "Жанр не вказано")
     
     book_info = f"Автор: {author}\nНазва: {title}\nЖанр: {book_genre}\nОпис: {desc}\n\n"
@@ -457,6 +456,7 @@ async def book_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Будь ласка, введіть своє ім’я для оформлення замовлення:"
     )
     return GET_NAME
+
 async def days_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -489,24 +489,25 @@ async def days_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🏠 На початок", callback_data="back:start")],
         ]
         text = (
-            f"📚 Ваше замовлення:\n"
-            f"🏠 Локація: {location}\n"
-            f"🖋 Автор: {author}\n"
-            f"📖 Книга: {book.get('title')}\n"
-            f"🗂 Жанр: {genre}\n"
-            f"📆 Днів: {days}\n"
-            f"👤 Ім'я: {data.get('name', 'не вказано')}\n"
-            f"📞 Контакт: {data.get('contact', 'не вказано')}\n"
-            f"\nСума до оплати: *{price_total} грн*\n\n"
+            f"📚 Ваше замовлення:<br>"
+            f"🏠 Локація: {location}<br>"
+            f"🖋 Автор: {author}<br>"
+            f"📖 Книга: {book.get('title')}<br>"
+            f"🗂 Жанр: {genre}<br>"
+            f"📆 Днів: {days}<br>"
+            f"👤 Ім'я: {data.get('name', 'не вказано')}<br>"
+            f"📞 Контакт: {data.get('contact', 'не вказано')}<br>"
+            f"<br>Сума до оплати: <b>{price_total} грн</b><br><br>"
             f"Натисніть кнопку нижче, щоб оплатити."
         )
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="HTML")
     except Exception as e:
         logger.error(f"Помилка створення інвойсу MonoPay: {e}")
         buttons = [[InlineKeyboardButton("🏠 На початок", callback_data="back:start")]]
         await query.edit_message_text(f"Помилка при створенні платежу: {e}", reply_markup=InlineKeyboardMarkup(buttons))
         return ConversationHandler.END
     return CONFIRMATION
+
 async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["name"] = update.message.text.strip()
     button = KeyboardButton("📱 Поділитися номером", request_contact=True)
