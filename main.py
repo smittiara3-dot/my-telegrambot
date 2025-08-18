@@ -92,7 +92,7 @@ def make_book_callback_data(title: str) -> str:
     h = hashlib.sha256(title.encode('utf-8')).hexdigest()[:16]
     return f"book:{h}"
 
-async def create_monopay_invoice(amount: int, description: str, order_id: str) -> str:
+async def create_monopay_invoice(amount: int, description: str, order_id: str) -> tuple[str, str]:
     url = "https://api.monobank.ua/api/merchant/invoice/create"
     headers = {
         "X-Token": MONOPAY_TOKEN,
@@ -110,7 +110,9 @@ async def create_monopay_invoice(amount: int, description: str, order_id: str) -
         async with session.post(url, headers=headers, json=data) as resp:
             resp_json = await resp.json()
             if resp.status == 200 and ("pageUrl" in resp_json or "invoiceUrl" in resp_json):
-                return resp_json.get("pageUrl") or resp_json.get("invoiceUrl")
+                invoice_id = resp_json.get("invoiceId")
+                payment_url = resp_json.get("pageUrl") or resp_json.get("invoiceUrl")
+                return payment_url, invoice_id
             else:
                 logger.error(f"MonoPay invoice creation error: {resp_json}")
                 raise Exception(f"Помилка створення інвойсу MonoPay: {resp_json}")
@@ -136,7 +138,7 @@ async def save_order_to_sheets(data: dict) -> bool:
                 data.get("name", ""),
                 data.get("contact", ""),
                 order_datetime,
-                data.get("order_id", ""),
+                data.get("invoice_id", ""),
                 data.get("chat_id", ""),
             ]
         )
@@ -145,17 +147,17 @@ async def save_order_to_sheets(data: dict) -> bool:
         logger.error(f"Помилка запису в Google Sheets: {e}", exc_info=True)
         return False
 
-async def get_chat_id_for_order(order_id: str) -> int | None:
+async def get_chat_id_for_order(invoice_id: str) -> int | None:
     try:
         worksheet = gc.open_by_key(GOOGLE_SHEET_ID_ORDERS).sheet1
         records = worksheet.get_all_records()
         for row in records:
-            if str(row.get("order_id", "")) == str(order_id):
+            if str(row.get("invoice_id", "")) == str(invoice_id):
                 chat_id = row.get("chat_id")
                 if chat_id:
                     return int(chat_id)
     except Exception as e:
-        logger.error(f"Error getting chat_id for order: {e}")
+        logger.error(f"Error getting chat_id for invoice: {e}")
     return None
 
 def load_data_from_google_sheet():
@@ -312,7 +314,7 @@ async def show_genres_for_location(update: Update, context: ContextTypes.DEFAULT
          InlineKeyboardButton("🏠 На початок", callback_data="back:start")]
     )
     await query.edit_message_text(
-        "А тепер — трохи магії!Який жанр сьогодні відгукується твоєму настрою?\n\n"
+        "А тепер — трохи магії! Який жанр сьогодні відгукується твоєму настрою?\n\n"
         "Любиш щось глибоке? Може, пригодницьке? А може — спокійний нон-фікшн на вечір?\n",
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
@@ -474,6 +476,29 @@ async def book_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return GET_NAME
 
+async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["name"] = update.message.text.strip()
+    button = KeyboardButton("📱 Поділитися номером", request_contact=True)
+    reply_markup = ReplyKeyboardMarkup([[button]], one_time_keyboard=True, resize_keyboard=True)
+    await update.message.reply_text("Надішліть номер телефону:", reply_markup=reply_markup)
+    return GET_CONTACT
+
+async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    contact = update.message.contact.phone_number if update.message.contact else update.message.text.strip()
+    context.user_data["contact"] = contact
+    buttons = [
+        [InlineKeyboardButton("7 днів", callback_data="days:7")],
+        [InlineKeyboardButton("14 днів", callback_data="days:14")],
+        [InlineKeyboardButton("🏠 На початок", callback_data="back:start")],
+    ]
+    await update.message.reply_text(
+        "Перш ніж книга вирушить з тобою, розповім кілька простих і чесних правил: бронь діє 7 чи 14 днів з моменту оплати\n\n"
+        "Книга повертається на ту ж поличку, де ти її взяв(-ла) Будь ласка, читай з любовʼю, не загинай сторінки і не залишай записів\n\n"
+        "Оберіть термін оренди:",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+    return BOOK_DETAILS
+
 async def days_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -489,7 +514,8 @@ async def days_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         locations_list = book_to_locations.get(book_title, [])
         location = ", ".join(locations_list) if locations_list else ""
         data["location"] = location
-    data["order_id"] = str(uuid.uuid4())
+    data["invoice_id"] = None  # Ініціалізація, буде встановлено пізніше
+
     data["chat_id"] = query.message.chat.id
     price_total = book.get(f'price_{days}', rental_price_map.get(days, 70))
     data["book"]["price"] = price_total
@@ -500,7 +526,9 @@ async def days_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
     description = f"Оренда книги {data['book']['title']} на {days} днів"
     try:
-        invoice_url = await create_monopay_invoice(price_total, description, data["order_id"])
+        invoice_url, invoice_id = await create_monopay_invoice(price_total, description, str(uuid.uuid4()))
+        data["invoice_id"] = invoice_id  # Зберігаємо invoiceId
+        await save_order_to_sheets(data)  # Оновлюємо у таблиці
         buttons = [
             [InlineKeyboardButton("💳 Оплатити MonoPay", url=invoice_url)],
             [InlineKeyboardButton("🏠 На початок", callback_data="back:start")],
@@ -525,37 +553,13 @@ async def days_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
     return CONFIRMATION
 
-async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["name"] = update.message.text.strip()
-    button = KeyboardButton("📱 Поділитися номером", request_contact=True)
-    reply_markup = ReplyKeyboardMarkup([[button]], one_time_keyboard=True, resize_keyboard=True)
-    await update.message.reply_text("Надішліть номер телефону:", reply_markup=reply_markup)
-    return GET_CONTACT
-
-async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    contact = update.message.contact.phone_number if update.message.contact else update.message.text.strip()
-    context.user_data["contact"] = contact
-    buttons = [
-        [InlineKeyboardButton("7 днів", callback_data="days:7")],
-        [InlineKeyboardButton("14 днів", callback_data="days:14")],
-        [InlineKeyboardButton("🏠 На початок", callback_data="back:start")],
-    ]
-    await update.message.reply_text(
-        "Перш ніж книга вирушить з тобою, розповім кілька простих і чесних правил: бронь діє 7 чи 14 днів з моменту оплати\n\n"
-        "Книга повертається на ту ж поличку, де ти її взяв(-ла) Будь ласка, читай з любовʼю, не загинай сторінки і не залишай записів\n\n"
-        "Оберіть термін оренди:",
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
-    return BOOK_DETAILS
-
 async def monopay_webhook(request):
     try:
         body = await request.text()
         data = json.loads(body)
-        
-        # Детальне логування повного webhook data
+
         logger.info(f"Full webhook data received from MonoPay:\n{json.dumps(data, indent=2, ensure_ascii=False)}")
-        
+
         signature = request.headers.get("X-Signature-MonoPay")
         if MONOPAY_WEBHOOK_SECRET and signature:
             computed_signature = hmac.new(
@@ -566,11 +570,13 @@ async def monopay_webhook(request):
             if not hmac.compare_digest(computed_signature, signature):
                 logger.warning("Invalid MonoPay webhook signature")
                 return web.Response(text="Invalid signature", status=403)
-        order_id = data.get("orderId")
+
+        invoice_id = data.get("invoiceId")
         payment_status = data.get("status")
-        logger.info(f"MonoPay webhook received: orderId={order_id}, status={payment_status}")
-        if payment_status == "PAID":
-            chat_id = await get_chat_id_for_order(order_id)
+        logger.info(f"MonoPay webhook received: invoiceId={invoice_id}, status={payment_status}")
+
+        if payment_status == "PAID" or payment_status == "success":
+            chat_id = await get_chat_id_for_order(invoice_id)
             if chat_id:
                 text = (
                     "✅ Все готово! Обійми книжку, забери її з полички — і насолоджуйся кожною сторінкою.\n"
@@ -589,7 +595,7 @@ async def monopay_webhook(request):
                 except Exception as e:
                     logger.error(f"Не вдалося надіслати повідомлення в Telegram: {e}")
             else:
-                logger.warning(f"Chat ID for order {order_id} not found")
+                logger.warning(f"Chat ID for invoice {invoice_id} not found")
         return web.Response(text="OK")
     except Exception as e:
         logger.exception("Error in MonoPay webhook:")
