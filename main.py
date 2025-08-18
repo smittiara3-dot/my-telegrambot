@@ -196,16 +196,17 @@ def load_data_from_google_sheet():
             if book["title"] not in location_to_books[loc]:
                 location_to_books[loc].append(book["title"])
         book_data[genre] = books
+    # Ось виправлення тут!
     if not df.empty:
+        row0 = df.iloc[0]
         rental_price_map = {
-            7: int(df.iloc[0].get('price_7', 70)),
-            14: int(df.iloc.get('price_14', 140))
+            7: int(row0['price_7']) if 'price_7' in row0 and pd.notna(row0['price_7']) else 70,
+            14: int(row0['price_14']) if 'price_14' in row0 and pd.notna(row0['price_14']) else 140
         }
     else:
         rental_price_map = {7: 70, 14: 140}
     logger.info(f"Дані завантажено: {len(locations)} локацій, {len(genres)} жанрів.")
 
-# --- Обробники ---
 async def reload_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         load_data_from_google_sheet()
@@ -454,20 +455,14 @@ async def book_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 raise
         return SHOW_BOOKS
     context.user_data["book"] = book
-    # <<< ДОДАНО: Запит на введення імені >>>
+    # Користувач має спочатку ввести своє ім'я
     await query.edit_message_text(
         "Ви обрали чудову книгу!\n\n"
         "Будь ласка, введіть своє ім’я для оформлення замовлення:"
     )
     return GET_NAME
-    # <<< КІНЕЦЬ ЗМІН >>>
-    # (далі вибір днів та оплата відбуватимуться вже після отримання номера телефону)
 
 async def days_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Більше не використовується одразу після вибору книги.
-    # Вибір днів відбуватиметься після отримання контактів.
-    # Але залишаємо лоґіку, якщо треба буде для допрацювання.
-
     query = update.callback_query
     await query.answer()
     days = int(query.data.split(":")[1])
@@ -528,7 +523,7 @@ async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     contact = update.message.contact.phone_number if update.message.contact else update.message.text.strip()
     context.user_data["contact"] = contact
-    # Після цього треба спитати термін оренди:
+    # Показати вибір днів після отримання контакту
     buttons = [
         [InlineKeyboardButton("7 днів", callback_data="days:7")],
         [InlineKeyboardButton("14 днів", callback_data="days:14")],
@@ -540,7 +535,6 @@ async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return BOOK_DETAILS
 
-# Обробник вебхуку MonoPay
 async def monopay_webhook(request):
     try:
         body = await request.text()
@@ -588,7 +582,6 @@ async def telegram_webhook_handler(request):
     await bot_app.process_update(update)
     return web.Response(text="OK", status=200)
 
-# Оновлена сторінка успішної оплати із автоматичним переходом у бот через посилання
 async def success_page_handler(request):
     html_content = f"""
     <!DOCTYPE html>
@@ -597,7 +590,6 @@ async def success_page_handler(request):
         <meta charset="UTF-8" />
         <title>Оплата успішна</title>
         <script>
-            // Автоматичний редірект через 5 секунд
             function goToBot() {{
                 window.location.href = "https://t.me/{os.getenv('BOT_USERNAME', '').lstrip('@')}";
             }}
