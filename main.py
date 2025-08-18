@@ -407,7 +407,7 @@ async def show_books(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
     )
     try:
-        await query.edit_message_text("Оберіть книгу:", reply_markup=InlineKeyboardMarkup(buttons))
+        await query.edit_message_text("Подивимось, що тут у нас:", reply_markup=InlineKeyboardMarkup(buttons))
     except BadRequest as e:
         if "Message is not modified" not in str(e):
             raise
@@ -765,5 +765,6 @@ if __name__ == "__main__":
         logger.info("Shutting down...")
         loop.run_until_complete(application.stop())
         loop.run_until_complete(application.shutdown())
+
 
 
