@@ -32,16 +32,13 @@ MONOPAY_TOKEN = os.getenv("MONOPAY_TOKEN")
 MONOPAY_WEBHOOK_SECRET = os.getenv("MONOPAY_WEBHOOK_SECRET", None)
 WEBHOOK_URL = os.getenv("WEBHOOK_URL").rstrip("/")
 PORT = int(os.getenv("PORT", 8443))
-
 GOOGLE_SHEET_ID_LOCATIONS = os.getenv("GOOGLE_SHEET_ID_LOCATIONS")
 GOOGLE_SHEET_ID_ORDERS = os.getenv("GOOGLE_SHEET_ID_ORDERS")
-
 creds_dict = json.loads(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"))
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
 ]
-
 credentials = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
 gc = gspread.Client(auth=credentials)
 gc.session = AuthorizedSession(credentials)
@@ -60,7 +57,6 @@ gc.session = AuthorizedSession(credentials)
 
 books_per_page = 10
 locations_per_page = 10
-
 locations = []
 genres = []
 authors = []
@@ -120,18 +116,14 @@ async def create_monopay_invoice(amount: int, description: str, order_id: str) -
 async def save_order_to_sheets(data: dict) -> bool:
     try:
         worksheet = gc.open_by_key(GOOGLE_SHEET_ID_ORDERS).sheet1
-
         location_str = data.get("location")
         if not location_str:
             book_title = data.get("book", {}).get("title", "")
             locs = book_to_locations.get(book_title, [])
             location_str = ", ".join(locs) if locs else ""
-
         book = data.get("book", {})
         author = book.get("author", "")
-
         order_datetime = datetime.now().isoformat(sep=' ', timespec='seconds')
-
         worksheet.append_row(
             [
                 location_str,
@@ -167,31 +159,25 @@ async def get_chat_id_for_order(order_id: str) -> int | None:
 def load_data_from_google_sheet():
     global locations, genres, authors, book_data, rental_price_map
     global book_to_locations, location_to_books, author_to_books, author_normalized_map, author_to_books_normalized
-
     sh = gc.open_by_key(GOOGLE_SHEET_ID_LOCATIONS)
     worksheet = sh.sheet1
     records = worksheet.get_all_records()
     df = pd.DataFrame(records)
-
     locations = sorted(df['location'].dropna().unique().tolist())
     genres = sorted(df['genre'].dropna().unique().tolist())
-
     authors.clear()
     author_normalized_map.clear()
     author_to_books.clear()
     author_to_books_normalized.clear()
-
     book_data.clear()
     book_to_locations.clear()
     location_to_books.clear()
-
     for genre in genres:
         books = []
         df_genre = df[df['genre'] == genre]
         for _, row in df_genre.iterrows():
             author_raw = row.get('author', '')
             author = author_raw.strip() if author_raw else ''
-
             book = {
                 "title": row['title'],
                 "desc": row['desc'],
@@ -200,32 +186,26 @@ def load_data_from_google_sheet():
                 "price_14": row.get('price_14', 140),
             }
             books.append(book)
-
             if book["title"] not in book_to_locations:
                 book_to_locations[book["title"]] = []
             if row['location'] not in book_to_locations[book["title"]]:
                 book_to_locations[book["title"]].append(row['location'])
-
             loc = row['location']
             if loc not in location_to_books:
                 location_to_books[loc] = []
             if book["title"] not in location_to_books[loc]:
                 location_to_books[loc].append(book["title"])
-
         book_data[genre] = books
-
     if not df.empty:
         rental_price_map = {
             7: int(df.iloc[0].get('price_7', 70)),
-            14: int(df.iloc[0].get('price_14', 140))
+            14: int(df.iloc.get('price_14', 140))
         }
     else:
         rental_price_map = {7: 70, 14: 140}
-
     logger.info(f"Дані завантажено: {len(locations)} локацій, {len(genres)} жанрів.")
 
 # --- Обробники ---
-
 async def reload_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         load_data_from_google_sheet()
@@ -242,15 +222,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info("Дані оновлені у /start")
     except Exception as e:
         logger.error(f"Помилка оновлення даних у /start: {e}")
-
     welcome_text = (
         "Привіт! Я — Ботик-книголюб\n"
         "Виберіть локацію або перегляньте всі книги."
     )
-
     keyboard = get_paginated_buttons(locations, 0, "location", locations_per_page, add_start_button=True)
     keyboard.append([InlineKeyboardButton("📚 Показати всі книги", callback_data="all_books")])
-
     if update.message:
         await update.message.reply_text(welcome_text, reply_markup=InlineKeyboardMarkup(keyboard))
     elif update.callback_query:
@@ -269,7 +246,6 @@ async def choose_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     current_page = context.user_data.get("location_page", 0)
     max_page = (len(locations) - 1) // locations_per_page
-
     if data == "location_next":
         next_page = min(current_page + 1, max_page)
         context.user_data["location_page"] = next_page
@@ -284,7 +260,6 @@ async def choose_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if "Message is not modified" not in str(e):
                 raise
         return CHOOSE_LOCATION
-
     if data == "location_prev":
         prev_page = max(current_page - 1, 0)
         context.user_data["location_page"] = prev_page
@@ -299,16 +274,12 @@ async def choose_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if "Message is not modified" not in str(e):
                 raise
         return CHOOSE_LOCATION
-
     loc_selected = data.split(":", 1)[1]
     context.user_data["location"] = loc_selected
-
     loc_books_titles = location_to_books.get(loc_selected, [])
-
     if not loc_books_titles:
         await query.edit_message_text(f"На локації \"{loc_selected}\" немає доступних книг.")
         return CHOOSE_LOCATION
-
     genres_in_location_set = set()
     for genre, books in book_data.items():
         titles = [b['title'] for b in books]
@@ -316,10 +287,8 @@ async def choose_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if t in titles:
                 genres_in_location_set.add(genre)
     genres_in_location = sorted(genres_in_location_set)
-
     context.user_data["location_genres"] = genres_in_location
     context.user_data["location_books"] = loc_books_titles
-
     await show_genres_for_location(update, context)
     return CHOOSE_GENRE
 
@@ -328,18 +297,15 @@ async def show_genres_for_location(update: Update, context: ContextTypes.DEFAULT
     await query.answer()
     genres_loc = context.user_data.get("location_genres", [])
     loc = context.user_data.get("location", "")
-
     if not genres_loc:
         await query.edit_message_text(f"На локації \"{loc}\" немає доступних жанрів.")
         return CHOOSE_LOCATION
-
     keyboard = [[InlineKeyboardButton(genre, callback_data=f"genre:{genre}")] for genre in genres_loc]
     keyboard.append([InlineKeyboardButton("📚 Показати всі книги на локації", callback_data="genre:all_location")])
     keyboard.append(
         [InlineKeyboardButton("🔙 Назад до локацій", callback_data="back:locations"),
          InlineKeyboardButton("🏠 На початок", callback_data="back:start")]
     )
-
     await query.edit_message_text(
         "Оберіть жанр:",
         reply_markup=InlineKeyboardMarkup(keyboard),
@@ -351,13 +317,11 @@ async def choose_genre(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     genre = query.data.split(":", 1)[1]
     loc = context.user_data.get("location")
-
     if genre == "all_location":
         loc_book_titles = context.user_data.get("location_books", [])
         if not loc_book_titles:
             await query.edit_message_text(f"На локації \"{loc}\" немає доступних книг.")
             return ConversationHandler.END
-
         books_list = []
         added_titles = set()
         for genre_books in book_data.values():
@@ -365,24 +329,18 @@ async def choose_genre(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if b["title"] in loc_book_titles and b["title"] not in added_titles:
                     books_list.append(b)
                     added_titles.add(b["title"])
-
         if not books_list:
             await query.edit_message_text(f"На локації \"{loc}\" немає доступних книг.")
             return ConversationHandler.END
-
         context.user_data["genre"] = "all_location"
         context.user_data["books"] = books_list
         context.user_data["book_page"] = 0
-
         await show_books(update, context)
         return SHOW_BOOKS
-
     if loc:
         loc_books_titles = location_to_books.get(loc, [])
         genre_books = book_data.get(genre, [])
-
         filtered_books = [b for b in genre_books if b["title"] in loc_books_titles]
-
         if not filtered_books:
             try:
                 await query.edit_message_text("Немає книг у цьому жанрі на цій локації.")
@@ -390,11 +348,9 @@ async def choose_genre(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if "Message is not modified" not in str(e):
                     raise
             return ConversationHandler.END
-
         context.user_data["genre"] = genre
         context.user_data["books"] = filtered_books
         context.user_data["book_page"] = 0
-
         await show_books(update, context)
         return SHOW_BOOKS
     else:
@@ -406,39 +362,31 @@ async def choose_genre(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if "Message is not modified" not in str(e):
                     raise
             return ConversationHandler.END
-
         context.user_data["genre"] = genre
         context.user_data["books"] = genre_books
         context.user_data["book_page"] = 0
-
         await show_books(update, context)
         return SHOW_BOOKS
 
 async def show_books(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-
     books = context.user_data.get("books", [])
     page = context.user_data.get("book_page", 0)
     start, end = page * books_per_page, (page + 1) * books_per_page
     page_books = books[start:end]
-
     buttons = []
     book_hash_map = {}
     for book in page_books:
         book_title = book['title']
         h = hashlib.sha256(book_title.encode('utf-8')).hexdigest()[:16]
         book_hash_map[h] = book_title
-
         author = book.get("author", "")
         title_text = f"{book_title}"
         if author:
             title_text += f" ({author})"
-
         buttons.append([InlineKeyboardButton(title_text, callback_data=f"book:{h}")])
-
     context.user_data["book_hash_map"] = book_hash_map
-
     nav = []
     if start > 0:
         nav.append(InlineKeyboardButton("⬅️", callback_data="book_prev"))
@@ -446,7 +394,6 @@ async def show_books(update: Update, context: ContextTypes.DEFAULT_TYPE):
         nav.append(InlineKeyboardButton("➡️", callback_data="book_next"))
     if nav:
         buttons.append(nav)
-
     buttons.append(
         [
             InlineKeyboardButton("🔙 До жанрів", callback_data="back:genres"),
@@ -454,13 +401,11 @@ async def show_books(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("🏠 На початок", callback_data="back:start"),
         ]
     )
-
     try:
         await query.edit_message_text("Оберіть книгу:", reply_markup=InlineKeyboardMarkup(buttons))
     except BadRequest as e:
         if "Message is not modified" not in str(e):
             raise
-
     return SHOW_BOOKS
 
 async def book_navigation(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -478,11 +423,9 @@ async def book_navigation(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def book_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-
     book_hash = query.data.split(":", 1)[1]
     book_hash_map = context.user_data.get("book_hash_map", {})
     book_title = book_hash_map.get(book_hash)
-
     if not book_title:
         try:
             await query.edit_message_text("Книгу не знайдено (неправильний код).")
@@ -490,12 +433,9 @@ async def book_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if "Message is not modified" not in str(e):
                 raise
         return SHOW_BOOKS
-
     genre = context.user_data.get("genre", "")
-
     current_books = context.user_data.get("books", [])
     book = next((b for b in current_books if b["title"] == book_title), None)
-
     if not book:
         if genre in ["all", "all_location"]:
             for g_books in book_data.values():
@@ -506,7 +446,6 @@ async def book_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             genre_books = book_data.get(genre, [])
             book = next((b for b in genre_books if b["title"] == book_title), None)
-
     if not book:
         try:
             await query.edit_message_text("Книгу не знайдено.")
@@ -514,78 +453,51 @@ async def book_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if "Message is not modified" not in str(e):
                 raise
         return SHOW_BOOKS
-
     context.user_data["book"] = book
-
-    locations_for_book = book_to_locations.get(book_title, [])
-    loc_text = ", ".join(locations_for_book) if locations_for_book else "Локація не вказана"
-
-    text = (
-        f"Ви обрали чудову книгу!\n"
-        f"Доступна на поличках: {loc_text}\n\n"
-        "Приємного читання!\n\n"
-        "Оберіть термін оренди:"
+    # <<< ДОДАНО: Запит на введення імені >>>
+    await query.edit_message_text(
+        "Ви обрали чудову книгу!\n\n"
+        "Будь ласка, введіть своє ім’я для оформлення замовлення:"
     )
+    return GET_NAME
+    # <<< КІНЕЦЬ ЗМІН >>>
+    # (далі вибір днів та оплата відбуватимуться вже після отримання номера телефону)
 
-    buttons = [
-        [InlineKeyboardButton("7 днів", callback_data="days:7")],
-        [InlineKeyboardButton("14 днів", callback_data="days:14")],
-        [InlineKeyboardButton("🔙 До книг", callback_data="back:books")],
-        [InlineKeyboardButton("🔙 До жанрів", callback_data="back:genres")],
-        [InlineKeyboardButton("🔙 До локацій", callback_data="back:locations")],
-        [InlineKeyboardButton("🏠 На початок", callback_data="back:start")],
-    ]
-
-    try:
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons))
-    except BadRequest as e:
-        if "Message is not modified" not in str(e):
-            raise
-
-    return BOOK_DETAILS
-
-# Оновлений handler: після вибору днів одразу генеруємо інвойс і показуємо посилання на оплату
 async def days_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Більше не використовується одразу після вибору книги.
+    # Вибір днів відбуватиметься після отримання контактів.
+    # Але залишаємо лоґіку, якщо треба буде для допрацювання.
+
     query = update.callback_query
     await query.answer()
     days = int(query.data.split(":")[1])
     context.user_data["days"] = str(days)
-
     data = context.user_data
     location = data.get("location")
     book = data.get("book", {})
     author = book.get("author", "")
     genre = data.get("genre")
-
     if not location:
         book_title = book.get("title", "")
         locations_list = book_to_locations.get(book_title, [])
         location = ", ".join(locations_list) if locations_list else ""
         data["location"] = location
-
     data["order_id"] = str(uuid.uuid4())
     data["chat_id"] = query.message.chat.id
-
     price_total = book.get(f'price_{days}', rental_price_map.get(days, 70))
     data["book"]["price"] = price_total
-
     logger.info("Отримане замовлення: %s", pprint.pformat(data))
-
     saved = await save_order_to_sheets(data)
     if not saved:
         await query.edit_message_text("Проблема із збереженням замовлення. Спробуйте пізніше.")
         return ConversationHandler.END
-
     description = f"Оренда книги {data['book']['title']} на {days} днів"
-
     try:
         invoice_url = await create_monopay_invoice(price_total, description, data["order_id"])
-
         buttons = [
             [InlineKeyboardButton("💳 Оплатити MonoPay", url=invoice_url)],
             [InlineKeyboardButton("🏠 На початок", callback_data="back:start")],
         ]
-
         text = (
             f"📚 Ваше замовлення:\n"
             f"🏠 Локація: {location}\n"
@@ -598,15 +510,12 @@ async def days_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"\nСума до оплати: *{price_total} грн*\n\n"
             f"Натисніть кнопку нижче, щоб оплатити."
         )
-
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
-
     except Exception as e:
         logger.error(f"Помилка створення інвойсу MonoPay: {e}")
         buttons = [[InlineKeyboardButton("🏠 На початок", callback_data="back:start")]]
         await query.edit_message_text(f"Помилка при створенні платежу: {e}", reply_markup=InlineKeyboardMarkup(buttons))
         return ConversationHandler.END
-
     return CONFIRMATION
 
 async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -619,41 +528,17 @@ async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     contact = update.message.contact.phone_number if update.message.contact else update.message.text.strip()
     context.user_data["contact"] = contact
-
-    data = context.user_data
-    days = int(data.get("days", 7))
-    price_total = data.get("book", {}).get(f"price_{days}", rental_price_map.get(days, 70))
-    description = f"Оренда книги {data['book']['title']} на {days} днів"
-    order_id = data["order_id"]
-
-    try:
-        invoice_url = await create_monopay_invoice(price_total, description, order_id)
-
-        text = (
-            f"📚 Ваше замовлення:\n"
-            f"🏠 Локація: {data.get('location', '')}\n"
-            f"🖋 Автор: {data['book'].get('author', '')}\n"
-            f"📖 Книга: {data['book'].get('title')}\n"
-            f"🗂 Жанр: {data.get('genre', '')}\n"
-            f"📆 Днів: {days}\n"
-            f"👤 Ім'я: {data.get('name')}\n"
-            f"📞 Контакт: {data.get('contact')}\n"
-            f"\nСума до оплати: *{price_total} грн*\n\n"
-            f"Натисніть кнопку нижче, щоб оплатити."
-        )
-
-        buttons = [
-            [InlineKeyboardButton("💳 Оплатити MonoPay", url=invoice_url)],
-            [InlineKeyboardButton("🏠 На початок", callback_data="back:start")],
-        ]
-
-        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
-
-    except Exception as e:
-        logger.error(f"Помилка створення інвойсу MonoPay: {e}")
-        await update.message.reply_text(f"Помилка при створенні платежу: {e}")
-
-    return CONFIRMATION
+    # Після цього треба спитати термін оренди:
+    buttons = [
+        [InlineKeyboardButton("7 днів", callback_data="days:7")],
+        [InlineKeyboardButton("14 днів", callback_data="days:14")],
+        [InlineKeyboardButton("🏠 На початок", callback_data="back:start")],
+    ]
+    await update.message.reply_text(
+        "Оберіть термін оренди:",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+    return BOOK_DETAILS
 
 # Обробник вебхуку MonoPay
 async def monopay_webhook(request):
@@ -661,7 +546,6 @@ async def monopay_webhook(request):
         body = await request.text()
         data = json.loads(body)
         signature = request.headers.get("X-Signature-MonoPay")
-
         if MONOPAY_WEBHOOK_SECRET and signature:
             computed_signature = hmac.new(
                 MONOPAY_WEBHOOK_SECRET.encode(),
@@ -671,11 +555,9 @@ async def monopay_webhook(request):
             if not hmac.compare_digest(computed_signature, signature):
                 logger.warning("Invalid MonoPay webhook signature")
                 return web.Response(text="Invalid signature", status=403)
-
         order_id = data.get("orderId")
         payment_status = data.get("status")
         logger.info(f"MonoPay webhook received: orderId={order_id}, status={payment_status}")
-
         if payment_status == "PAID":
             chat_id = await get_chat_id_for_order(order_id)
             if chat_id:
@@ -693,7 +575,6 @@ async def monopay_webhook(request):
                     logger.error(f"Не вдалося надіслати повідомлення в Telegram: {e}")
             else:
                 logger.warning(f"Chat ID for order {order_id} not found")
-
         return web.Response(text="OK")
     except Exception as e:
         logger.exception("Error in MonoPay webhook:")
@@ -754,16 +635,13 @@ async def success_page_handler(request):
 async def go_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data
-
     if data == "back:genres":
         if context.user_data.get("location"):
             return await show_genres_for_location(update, context)
         else:
             return await start(update, context)
-
     if data == "back:books":
         return await show_books(update, context)
-
     if data == "back:locations":
         welcome_text = (
             "Привіт! Я — Ботик-книголюб\n"
@@ -777,14 +655,12 @@ async def go_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if "Message is not modified" not in str(e):
                 raise
         return CHOOSE_LOCATION
-
     if data == "back:start":
         context.user_data.clear()
         try:
             load_data_from_google_sheet()
         except Exception as e:
             logger.error(f"Помилка оновлення даних при 'На початок': {e}")
-
         welcome_text = (
             "Привіт! Я — Ботик-книголюб\n"
             "Почнемо спочатку.\n"
@@ -803,33 +679,26 @@ async def start_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     query = update.callback_query
     await query.answer()
     data = query.data
-
     if data == "all_books":
         books_all = []
         for genre_books in book_data.values():
             books_all.extend(genre_books)
-
         if not books_all:
             await query.edit_message_text("Немає доступних книг.")
             return ConversationHandler.END
-
         unique_books = {}
         for b in books_all:
             unique_books[b["title"]] = b
-
         context.user_data["books"] = list(unique_books.values())
         context.user_data["genre"] = "all"
         context.user_data["book_page"] = 0
-
         return await show_books(update, context)
-
     await query.answer("Невідома дія")
     return CHOOSE_LOCATION
 
 async def init_app():
     load_data_from_google_sheet()
     application = Application.builder().token(BOT_TOKEN).build()
-
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
@@ -855,8 +724,12 @@ async def init_app():
                 CallbackQueryHandler(go_back, pattern=r"^back:(books|genres|locations|start)$"),
             ],
             CHOOSE_RENT_DAYS: [],
-            GET_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_name)],
-            GET_CONTACT: [MessageHandler(filters.CONTACT | filters.TEXT, get_contact)],
+            GET_NAME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, get_name)
+            ],
+            GET_CONTACT: [
+                MessageHandler(filters.CONTACT | filters.TEXT, get_contact)
+            ],
             CONFIRMATION: [
                 CallbackQueryHandler(go_back, pattern=r"^back:start$"),
             ],
@@ -866,41 +739,30 @@ async def init_app():
     application.add_handler(conv_handler)
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("reload", reload_data))
-
     await application.initialize()
     await application.start()
-
     app = web.Application()
     app.router.add_get("/", lambda request: web.Response(text="OK", status=200))
     app.router.add_post("/telegram_webhook", telegram_webhook_handler)
     app.router.add_post("/monopay_callback", monopay_webhook)
     app.router.add_get("/success", success_page_handler)
-
     app.bot_updater = application
-
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
-
     await application.bot.set_webhook(f"{WEBHOOK_URL}/telegram_webhook")
-
     logger.info(f"Server started on port {PORT}")
     logger.info(f"Telegram webhook set to {WEBHOOK_URL}/telegram_webhook")
-
     return app, application
 
 if __name__ == "__main__":
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-
     app, application = loop.run_until_complete(init_app())
-
     try:
         loop.run_forever()
     except KeyboardInterrupt:
         logger.info("Shutting down...")
         loop.run_until_complete(application.stop())
         loop.run_until_complete(application.shutdown())
-
-
