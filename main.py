@@ -489,15 +489,15 @@ async def days_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🏠 На початок", callback_data="back:start")],
         ]
         text = (
-            f"📚 Ваше замовлення:<br>"
-            f"🏠 Локація: {location}<br>"
-            f"🖋 Автор: {author}<br>"
-            f"📖 Книга: {book.get('title')}<br>"
-            f"🗂 Жанр: {genre}<br>"
-            f"📆 Днів: {days}<br>"
-            f"👤 Ім'я: {data.get('name', 'не вказано')}<br>"
-            f"📞 Контакт: {data.get('contact', 'не вказано')}<br>"
-            f"<br>Сума до оплати: <b>{price_total} грн</b><br><br>"
+            f"📚 Ваше замовлення:\n"
+            f"🏠 Локація: {location}\n"
+            f"🖋 Автор: {author}\n"
+            f"📖 Книга: {book.get('title')}\n"
+            f"🗂 Жанр: {genre}\n"
+            f"📆 Днів: {days}\n"
+            f"👤 Ім'я: {data.get('name', 'не вказано')}\n"
+            f"📞 Контакт: {data.get('contact', 'не вказано')}\n"
+            f"\nСума до оплати: <b>{price_total} грн</b>\n\n"
             f"Натисніть кнопку нижче, щоб оплатити."
         )
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="HTML")
