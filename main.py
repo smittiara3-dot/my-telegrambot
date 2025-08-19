@@ -34,7 +34,6 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL").rstrip("/")
 PORT = int(os.getenv("PORT", 8443))
 GOOGLE_SHEET_ID_LOCATIONS = os.getenv("GOOGLE_SHEET_ID_LOCATIONS")
 GOOGLE_SHEET_ID_ORDERS = os.getenv("GOOGLE_SHEET_ID_ORDERS")
-
 creds_dict = json.loads(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"))
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -69,6 +68,10 @@ location_to_books = {}
 author_to_books = {}
 author_to_books_normalized = {}
 rental_price_map = {}
+
+# Temporary in-memory store for orders before payment confirmation.
+# Key: invoice_id (str), Value: order data (dict)
+pending_orders = {}
 
 def normalize_str(s: str) -> str:
     return s.strip().lower() if s else ""
@@ -514,21 +517,22 @@ async def days_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         locations_list = book_to_locations.get(book_title, [])
         location = ", ".join(locations_list) if locations_list else ""
         data["location"] = location
-    data["invoice_id"] = None  # Ініціалізація, буде встановлено пізніше
 
-    data["chat_id"] = query.message.chat.id
+    # generate unique order id for this invoice
+    invoice_uuid = str(uuid.uuid4())
+    description = f"Оренда книги {data['book']['title']} на {days} днів"
     price_total = book.get(f'price_{days}', rental_price_map.get(days, 70))
     data["book"]["price"] = price_total
-    logger.info("Отримане замовлення: %s", pprint.pformat(data))
-    saved = await save_order_to_sheets(data)
-    if not saved:
-        await query.edit_message_text("Проблема із збереженням замовлення. Спробуйте пізніше.")
-        return ConversationHandler.END
-    description = f"Оренда книги {data['book']['title']} на {days} днів"
+    data["invoice_id"] = None  # placeholder, will be set after creation
+    data["chat_id"] = query.message.chat.id
+
+    # Create invoice on MonoPay
     try:
-        invoice_url, invoice_id = await create_monopay_invoice(price_total, description, str(uuid.uuid4()))
-        data["invoice_id"] = invoice_id  # Зберігаємо invoiceId
-        await save_order_to_sheets(data)  # Оновлюємо у таблиці
+        invoice_url, invoice_id = await create_monopay_invoice(price_total, description, invoice_uuid)
+        data["invoice_id"] = invoice_id
+        # Save to in-memory pending orders storage (not yet to Google Sheets)
+        pending_orders[invoice_id] = data.copy()
+        # Show payment button with link to MonoPay
         buttons = [
             [InlineKeyboardButton("💳 Оплатити MonoPay", url=invoice_url)],
             [InlineKeyboardButton("🏠 На початок", callback_data="back:start")],
@@ -551,15 +555,14 @@ async def days_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         buttons = [[InlineKeyboardButton("🏠 На початок", callback_data="back:start")]]
         await query.edit_message_text(f"Помилка при створенні платежу: {e}", reply_markup=InlineKeyboardMarkup(buttons))
         return ConversationHandler.END
+
     return CONFIRMATION
 
 async def monopay_webhook(request):
     try:
         body = await request.text()
         data = json.loads(body)
-
         logger.info(f"Full webhook data received from MonoPay:\n{json.dumps(data, indent=2, ensure_ascii=False)}")
-
         signature = request.headers.get("X-Signature-MonoPay")
         if MONOPAY_WEBHOOK_SECRET and signature:
             computed_signature = hmac.new(
@@ -570,32 +573,41 @@ async def monopay_webhook(request):
             if not hmac.compare_digest(computed_signature, signature):
                 logger.warning("Invalid MonoPay webhook signature")
                 return web.Response(text="Invalid signature", status=403)
-
         invoice_id = data.get("invoiceId")
         payment_status = data.get("status")
         logger.info(f"MonoPay webhook received: invoiceId={invoice_id}, status={payment_status}")
 
-        if payment_status == "PAID" or payment_status == "success":
-            chat_id = await get_chat_id_for_order(invoice_id)
-            if chat_id:
-                text = (
-                    "✅ Все готово! Обійми книжку, забери її з полички — і насолоджуйся кожною сторінкою.\n"
-                    "Нехай ця історія буде саме тією, яку тобі зараз потрібно.\n"
-                    "З любов’ю до читання, Тиха поличка і я — Ботик-книголюб 🤍"
-                )
-                buttons = [
-                    [InlineKeyboardButton("🏠 На початок", callback_data="back:start")]
-                ]
-                try:
-                    await request.app.bot_updater.bot.send_message(
-                        chat_id,
-                        text,
-                        reply_markup=InlineKeyboardMarkup(buttons)
+        if payment_status in {"PAID", "success"}:
+            # Retrieve pending order data by invoice_id
+            order_data = pending_orders.pop(invoice_id, None)
+            if order_data:
+                # Save order to Google Sheets now after confirmed payment
+                saved = await save_order_to_sheets(order_data)
+                if not saved:
+                    logger.error(f"Failed to save order to sheets for invoice {invoice_id}")
+                chat_id = order_data.get("chat_id")
+                if chat_id:
+                    text = (
+                        "✅ Все готово! Обійми книжку, забери її з полички — і насолоджуйся кожною сторінкою.\n"
+                        "Нехай ця історія буде саме тією, яку тобі зараз потрібно.\n"
+                        "З любов’ю до читання, Тиха поличка і я — Ботик-книголюб 🤍"
                     )
-                except Exception as e:
-                    logger.error(f"Не вдалося надіслати повідомлення в Telegram: {e}")
+                    buttons = [
+                        [InlineKeyboardButton("🏠 На початок", callback_data="back:start")]
+                    ]
+                    try:
+                        await request.app.bot_updater.bot.send_message(
+                            chat_id,
+                            text,
+                            reply_markup=InlineKeyboardMarkup(buttons)
+                        )
+                    except Exception as e:
+                        logger.error(f"Не вдалося надіслати повідомлення в Telegram: {e}")
+                else:
+                    logger.warning(f"Chat ID for invoice {invoice_id} not found")
             else:
-                logger.warning(f"Chat ID for invoice {invoice_id} not found")
+                logger.warning(f"No pending order found for invoice {invoice_id}, skipping saving to Sheets")
+
         return web.Response(text="OK")
     except Exception as e:
         logger.exception("Error in MonoPay webhook:")
@@ -721,6 +733,7 @@ async def start_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def init_app():
     load_data_from_google_sheet()
     application = Application.builder().token(BOT_TOKEN).build()
+
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
@@ -753,29 +766,36 @@ async def init_app():
                 MessageHandler(filters.CONTACT | filters.TEXT, get_contact)
             ],
             CONFIRMATION: [
-                CallbackQueryHandler(go_back, pattern=r"^back:start$"),
+                CallbackQueryHandler(go_back, pattern=r"^back:start$")
             ],
         },
         fallbacks=[CommandHandler("cancel", lambda update, context: update.message.reply_text("❌ Скасовано."))],
     )
+
     application.add_handler(conv_handler)
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("reload", reload_data))
+
     await application.initialize()
     await application.start()
+
     app = web.Application()
     app.router.add_get("/", lambda request: web.Response(text="OK", status=200))
     app.router.add_post("/telegram_webhook", telegram_webhook_handler)
     app.router.add_post("/monopay_callback", monopay_webhook)
     app.router.add_get("/success", success_page_handler)
+
     app.bot_updater = application
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
+
     await application.bot.set_webhook(f"{WEBHOOK_URL}/telegram_webhook")
+
     logger.info(f"Server started on port {PORT}")
     logger.info(f"Telegram webhook set to {WEBHOOK_URL}/telegram_webhook")
+
     return app, application
 
 if __name__ == "__main__":
