@@ -21,9 +21,10 @@ from google.oauth2.service_account import Credentials
 from google.auth.transport.requests import AuthorizedSession
 import pandas as pd
 from datetime import datetime
+import pytz
 from dotenv import load_dotenv
-
 load_dotenv()
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -34,8 +35,8 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL").rstrip("/")
 PORT = int(os.getenv("PORT", 8443))
 GOOGLE_SHEET_ID_LOCATIONS = os.getenv("GOOGLE_SHEET_ID_LOCATIONS")
 GOOGLE_SHEET_ID_ORDERS = os.getenv("GOOGLE_SHEET_ID_ORDERS")
-
 creds_dict = json.loads(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"))
+
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
@@ -58,7 +59,6 @@ gc.session = AuthorizedSession(credentials)
 
 books_per_page = 10
 locations_per_page = 10
-
 locations = []
 genres = []
 authors = []
@@ -70,8 +70,10 @@ author_to_books = {}
 author_to_books_normalized = {}
 rental_price_map = {}
 
+
 def normalize_str(s: str) -> str:
     return s.strip().lower() if s else ""
+
 
 def get_paginated_buttons(items, page, prefix, page_size, add_start_button=False):
     start = page * page_size
@@ -88,9 +90,11 @@ def get_paginated_buttons(items, page, prefix, page_size, add_start_button=False
         buttons.append([InlineKeyboardButton("🏠 На початок", callback_data="back:start")])
     return buttons
 
+
 def make_book_callback_data(title: str) -> str:
     h = hashlib.sha256(title.encode('utf-8')).hexdigest()[:16]
     return f"book:{h}"
+
 
 async def create_monopay_invoice(amount: int, description: str, order_id: str) -> tuple[str, str]:
     url = "https://api.monobank.ua/api/merchant/invoice/create"
@@ -117,35 +121,59 @@ async def create_monopay_invoice(amount: int, description: str, order_id: str) -
                 logger.error(f"MonoPay invoice creation error: {resp_json}")
                 raise Exception(f"Помилка створення інвойсу MonoPay: {resp_json}")
 
+
 async def save_order_to_sheets(data: dict) -> bool:
+    """
+    Зберігає замовлення в Google Sheets.
+    Перевіряє дублікати за chat_id та invoice_id, щоб уникнути повторних пустих записів.
+    """
     try:
         worksheet = gc.open_by_key(GOOGLE_SHEET_ID_ORDERS).sheet1
-        location_str = data.get("location")
-        if not location_str:
-            book_title = data.get("book", {}).get("title", "")
-            locs = book_to_locations.get(book_title, [])
-            location_str = ", ".join(locs) if locs else ""
+        records = worksheet.get_all_records()
         book = data.get("book", {})
+        location_str = data.get("location", "")
         author = book.get("author", "")
-        order_datetime = datetime.now().isoformat(sep=' ', timespec='seconds')
+        title = book.get("title", "")
+        days = data.get("days", "")
+        name = data.get("name", "")
+        contact = data.get("contact", "")
+        invoice_id = data.get("invoice_id")
+        chat_id = data.get("chat_id")
+
+        # Перевірка на дублікати записи з пустим invoice_id та таким самим chat_id
+        for row in records:
+            row_chat_id = row.get("chat_id")
+            row_invoice_id = row.get("invoice_id")
+            if row_chat_id == chat_id and (not row_invoice_id or row_invoice_id == ""):
+                logger.info(f"Duplicate detected: skipping adding order with empty invoice_id for chat_id {chat_id}")
+                return True
+            if invoice_id and row_invoice_id == invoice_id:
+                logger.info(f"Order with invoice_id {invoice_id} already exists in sheet.")
+                return True
+
+        # Визначення локального часу замовлення з урахуванням часового поясу Europe/Kiev
+        local_tz = pytz.timezone("Europe/Kiev")
+        order_datetime = datetime.now(local_tz).strftime("%Y-%m-%d %H:%M:%S")
+
         worksheet.append_row(
             [
                 location_str,
                 author,
-                book.get("title", ""),
+                title,
                 data.get("genre", ""),
-                data.get("days", ""),
-                data.get("name", ""),
-                data.get("contact", ""),
+                days,
+                name,
+                contact,
                 order_datetime,
-                data.get("invoice_id", ""),
-                data.get("chat_id", ""),
+                invoice_id or "",
+                chat_id or "",
             ]
         )
         return True
     except Exception as e:
         logger.error(f"Помилка запису в Google Sheets: {e}", exc_info=True)
         return False
+
 
 async def get_chat_id_for_order(invoice_id: str) -> int | None:
     try:
@@ -159,6 +187,7 @@ async def get_chat_id_for_order(invoice_id: str) -> int | None:
     except Exception as e:
         logger.error(f"Error getting chat_id for invoice: {e}")
     return None
+
 
 def load_data_from_google_sheet():
     global locations, genres, authors, book_data, rental_price_map
@@ -210,6 +239,7 @@ def load_data_from_google_sheet():
         rental_price_map = {7: 70, 14: 140}
     logger.info(f"Дані завантажено: {len(locations)} локацій, {len(genres)} жанрів.")
 
+
 async def reload_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         load_data_from_google_sheet()
@@ -219,6 +249,7 @@ async def reload_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Помилка оновлення даних: {e}", exc_info=True)
         await update.message.reply_text("Сталася помилка при оновленні даних. Спробуйте пізніше.")
 
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     try:
@@ -227,11 +258,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Помилка оновлення даних у /start: {e}")
     welcome_text = (
-            "Привіт! Я — Ботик-книголюб 📚\n"
-            "Я доглядаю за Тихою поличкою — місцем, де книги говорять у тиші, а читачі знаходять саме ту історію, яка зараз потрібна\n"
-            "Я допоможу тобі обрати книгу, розповім усе, що треба знати, і проведу до затишного читання 🌿\n"
-            "Спочатку оберімо, на якій поличці ти сьогодні?\n"
-            "Вибери місце, де ти знайшов(-ла) нас — і я покажу доступні книжки ✨\n"
+        "Привіт! Я — Ботик-книголюб 📚\n"
+        "Я доглядаю за Тихою поличкою — місцем, де книги говорять у тиші, а читачі знаходять саме ту історію, яка зараз потрібна\n"
+        "Я допоможу тобі обрати книгу, розповім усе, що треба знати, і проведу до затишного читання 🌿\n"
+        "Спочатку оберімо, на якій поличці ти сьогодні?\n"
+        "Вибери місце, де ти знайшов(-ла) нас — і я покажу доступні книжки ✨\n"
     )
     keyboard = get_paginated_buttons(locations, 0, "location", locations_per_page, add_start_button=True)
     keyboard.append([InlineKeyboardButton("📚 Показати всі книги", callback_data="all_books")])
@@ -246,6 +277,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 raise
     context.user_data["location_page"] = 0
     return CHOOSE_LOCATION
+
 
 async def choose_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -299,6 +331,7 @@ async def choose_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await show_genres_for_location(update, context)
     return CHOOSE_GENRE
 
+
 async def show_genres_for_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -319,6 +352,7 @@ async def show_genres_for_location(update: Update, context: ContextTypes.DEFAULT
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
     return CHOOSE_GENRE
+
 
 async def choose_genre(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -376,6 +410,7 @@ async def choose_genre(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_books(update, context)
         return SHOW_BOOKS
 
+
 async def show_books(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -416,6 +451,7 @@ async def show_books(update: Update, context: ContextTypes.DEFAULT_TYPE):
             raise
     return SHOW_BOOKS
 
+
 async def book_navigation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -427,6 +463,7 @@ async def book_navigation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "book_prev":
         context.user_data["book_page"] = max(current_page - 1, 0)
     return await show_books(update, context)
+
 
 async def book_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -476,12 +513,14 @@ async def book_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return GET_NAME
 
+
 async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["name"] = update.message.text.strip()
     button = KeyboardButton("📱 Поділитися номером", request_contact=True)
     reply_markup = ReplyKeyboardMarkup([[button]], one_time_keyboard=True, resize_keyboard=True)
     await update.message.reply_text("Надішліть номер телефону:", reply_markup=reply_markup)
     return GET_CONTACT
+
 
 async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     contact = update.message.contact.phone_number if update.message.contact else update.message.text.strip()
@@ -499,6 +538,7 @@ async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return BOOK_DETAILS
 
+
 async def days_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -515,7 +555,6 @@ async def days_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         location = ", ".join(locations_list) if locations_list else ""
         data["location"] = location
     data["invoice_id"] = None  # Ініціалізація, буде встановлено пізніше
-
     data["chat_id"] = query.message.chat.id
     price_total = book.get(f'price_{days}', rental_price_map.get(days, 70))
     data["book"]["price"] = price_total
@@ -553,13 +592,12 @@ async def days_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
     return CONFIRMATION
 
+
 async def monopay_webhook(request):
     try:
         body = await request.text()
         data = json.loads(body)
-
         logger.info(f"Full webhook data received from MonoPay:\n{json.dumps(data, indent=2, ensure_ascii=False)}")
-
         signature = request.headers.get("X-Signature-MonoPay")
         if MONOPAY_WEBHOOK_SECRET and signature:
             computed_signature = hmac.new(
@@ -570,11 +608,9 @@ async def monopay_webhook(request):
             if not hmac.compare_digest(computed_signature, signature):
                 logger.warning("Invalid MonoPay webhook signature")
                 return web.Response(text="Invalid signature", status=403)
-
         invoice_id = data.get("invoiceId")
         payment_status = data.get("status")
         logger.info(f"MonoPay webhook received: invoiceId={invoice_id}, status={payment_status}")
-
         if payment_status == "PAID" or payment_status == "success":
             chat_id = await get_chat_id_for_order(invoice_id)
             if chat_id:
@@ -601,6 +637,7 @@ async def monopay_webhook(request):
         logger.exception("Error in MonoPay webhook:")
         return web.Response(text=f"Error: {e}", status=500)
 
+
 async def telegram_webhook_handler(request):
     app = request.app
     bot_app = app.bot_updater
@@ -608,6 +645,7 @@ async def telegram_webhook_handler(request):
     update = Update.de_json(json.loads(body), bot_app.bot)
     await bot_app.process_update(update)
     return web.Response(text="OK", status=200)
+
 
 async def success_page_handler(request):
     html_content = f"""
@@ -650,6 +688,7 @@ async def success_page_handler(request):
     </html>
     """
     return web.Response(text=html_content, content_type='text/html')
+
 
 async def go_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -697,6 +736,7 @@ async def go_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 raise
         return CHOOSE_LOCATION
 
+
 async def start_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -717,6 +757,7 @@ async def start_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return await show_books(update, context)
     await query.answer("Невідома дія")
     return CHOOSE_LOCATION
+
 
 async def init_app():
     load_data_from_google_sheet()
@@ -777,6 +818,7 @@ async def init_app():
     logger.info(f"Server started on port {PORT}")
     logger.info(f"Telegram webhook set to {WEBHOOK_URL}/telegram_webhook")
     return app, application
+
 
 if __name__ == "__main__":
     loop = asyncio.new_event_loop()
