@@ -284,10 +284,266 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return CHOOSE_LOCATION
 
 
-# Навігаційні функції (choose_location, show_genres_for_location, choose_genre, show_books, book_navigation, book_detail, get_name, get_contact, go_back, start_menu_handler)
-# залишаються без змін, як їх було в вашому початковому коді.
+async def choose_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    current_page = context.user_data.get("location_page", 0)
+    max_page = (len(locations) - 1) // locations_per_page
+    if data == "location_next":
+        next_page = min(current_page + 1, max_page)
+        context.user_data["location_page"] = next_page
+        keyboard = get_paginated_buttons(locations, next_page, "location", locations_per_page, add_start_button=True)
+        keyboard.append([InlineKeyboardButton("📚 Показати всі книги", callback_data="all_books")])
+        try:
+            await query.edit_message_text(
+                "Оберіть локацію:",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        except BadRequest as e:
+            if "Message is not modified" not in str(e):
+                raise
+        return CHOOSE_LOCATION
+    if data == "location_prev":
+        prev_page = max(current_page - 1, 0)
+        context.user_data["location_page"] = prev_page
+        keyboard = get_paginated_buttons(locations, prev_page, "location", locations_per_page, add_start_button=True)
+        keyboard.append([InlineKeyboardButton("📚 Показати всі книги", callback_data="all_books")])
+        try:
+            await query.edit_message_text(
+                "Оберіть локацію:",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        except BadRequest as e:
+            if "Message is not modified" not in str(e):
+                raise
+        return CHOOSE_LOCATION
+    loc_selected = data.split(":", 1)[1]
+    context.user_data["location"] = loc_selected
+    loc_books_titles = location_to_books.get(loc_selected, [])
+    if not loc_books_titles:
+        await query.edit_message_text(f"На локації \"{loc_selected}\" немає доступних книг.")
+        return CHOOSE_LOCATION
+    genres_in_location_set = set()
+    for genre, books in book_data.items():
+        titles = [b['title'] for b in books]
+        for t in loc_books_titles:
+            if t in titles:
+                genres_in_location_set.add(genre)
+    genres_in_location = sorted(genres_in_location_set)
+    context.user_data["location_genres"] = genres_in_location
+    context.user_data["location_books"] = loc_books_titles
+    await show_genres_for_location(update, context)
+    return CHOOSE_GENRE
 
-# Тепер оновлюємо days_chosen обов'язково з записом даних у таблицю відразу зі статусом PENDING:
+
+async def show_genres_for_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    genres_loc = context.user_data.get("location_genres", [])
+    loc = context.user_data.get("location", "")
+    if not genres_loc:
+        await query.edit_message_text(f"На локації \"{loc}\" немає доступних жанрів.")
+        return CHOOSE_LOCATION
+    keyboard = [[InlineKeyboardButton(genre, callback_data=f"genre:{genre}")] for genre in genres_loc]
+    keyboard.append([InlineKeyboardButton("📚 Показати всі книги на локації", callback_data="genre:all_location")])
+    keyboard.append(
+        [InlineKeyboardButton("🔙 Назад до локацій", callback_data="back:locations"),
+         InlineKeyboardButton("🏠 На початок", callback_data="back:start")]
+    )
+    await query.edit_message_text(
+        "А тепер — трохи магії! Який жанр сьогодні відгукується твоєму настрою?\n\n"
+        "Любиш щось глибоке? Може, пригодницьке? А може — спокійний нон-фікшн на вечір?\n",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    return CHOOSE_GENRE
+
+
+async def choose_genre(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    genre = query.data.split(":", 1)[1]
+    loc = context.user_data.get("location")
+    if genre == "all_location":
+        loc_book_titles = context.user_data.get("location_books", [])
+        if not loc_book_titles:
+            await query.edit_message_text(f"На локації \"{loc}\" немає доступних книг.")
+            return ConversationHandler.END
+        books_list = []
+        added_titles = set()
+        for genre_books in book_data.values():
+            for b in genre_books:
+                if b["title"] in loc_book_titles and b["title"] not in added_titles:
+                    books_list.append(b)
+                    added_titles.add(b["title"])
+        if not books_list:
+            await query.edit_message_text(f"На локації \"{loc}\" немає доступних книг.")
+            return ConversationHandler.END
+        context.user_data["genre"] = "all_location"
+        context.user_data["books"] = books_list
+        context.user_data["book_page"] = 0
+        await show_books(update, context)
+        return SHOW_BOOKS
+    if loc:
+        loc_books_titles = location_to_books.get(loc, [])
+        genre_books = book_data.get(genre, [])
+        filtered_books = [b for b in genre_books if b["title"] in loc_books_titles]
+        if not filtered_books:
+            try:
+                await query.edit_message_text("Немає книг у цьому жанрі на цій локації.")
+            except BadRequest as e:
+                if "Message is not modified" not in str(e):
+                    raise
+            return ConversationHandler.END
+        context.user_data["genre"] = genre
+        context.user_data["books"] = filtered_books
+        context.user_data["book_page"] = 0
+        await show_books(update, context)
+        return SHOW_BOOKS
+    else:
+        genre_books = book_data.get(genre, [])
+        if not genre_books:
+            try:
+                await query.edit_message_text("Немає книг у цьому жанрі.")
+            except BadRequest as e:
+                if "Message is not modified" not in str(e):
+                    raise
+            return ConversationHandler.END
+        context.user_data["genre"] = genre
+        context.user_data["books"] = genre_books
+        context.user_data["book_page"] = 0
+        await show_books(update, context)
+        return SHOW_BOOKS
+
+
+async def show_books(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    books = context.user_data.get("books", [])
+    page = context.user_data.get("book_page", 0)
+    start, end = page * books_per_page, (page + 1) * books_per_page
+    page_books = books[start:end]
+    buttons = []
+    book_hash_map = {}
+    for book in page_books:
+        book_title = book['title']
+        h = hashlib.sha256(book_title.encode('utf-8')).hexdigest()[:16]
+        book_hash_map[h] = book_title
+        author = book.get("author", "")
+        title_text = f"{book_title}"
+        if author:
+            title_text += f" ({author})"
+        buttons.append([InlineKeyboardButton(title_text, callback_data=f"book:{h}")])
+    context.user_data["book_hash_map"] = book_hash_map
+    nav = []
+    if start > 0:
+        nav.append(InlineKeyboardButton("⬅️", callback_data="book_prev"))
+    if end < len(books):
+        nav.append(InlineKeyboardButton("➡️", callback_data="book_next"))
+    if nav:
+        buttons.append(nav)
+    buttons.append(
+        [
+            InlineKeyboardButton("🔙 До жанрів", callback_data="back:genres"),
+            InlineKeyboardButton("🔙 До локацій", callback_data="back:locations"),
+            InlineKeyboardButton("🏠 На початок", callback_data="back:start"),
+        ]
+    )
+    try:
+        await query.edit_message_text("Подивимось, що тут у нас:", reply_markup=InlineKeyboardMarkup(buttons))
+    except BadRequest as e:
+        if "Message is not modified" not in str(e):
+            raise
+    return SHOW_BOOKS
+
+
+async def book_navigation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    current_page = context.user_data.get("book_page", 0)
+    books = context.user_data.get("books", [])
+    max_page = (len(books) - 1) // books_per_page if books else 0
+    if query.data == "book_next":
+        context.user_data["book_page"] = min(current_page + 1, max_page)
+    elif query.data == "book_prev":
+        context.user_data["book_page"] = max(current_page - 1, 0)
+    return await show_books(update, context)
+
+
+async def book_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    book_hash = query.data.split(":", 1)[1]
+    book_hash_map = context.user_data.get("book_hash_map", {})
+    book_title = book_hash_map.get(book_hash)
+    if not book_title:
+        try:
+            await query.edit_message_text("Книгу не знайдено (неправильний код).")
+        except BadRequest as e:
+            if "Message is not modified" not in str(e):
+                raise
+        return SHOW_BOOKS
+    genre = context.user_data.get("genre", "")
+    current_books = context.user_data.get("books", [])
+    book = next((b for b in current_books if b["title"] == book_title), None)
+    if not book:
+        if genre in ["all", "all_location"]:
+            for g_books in book_data.values():
+                candidate = next((b for b in g_books if b["title"] == book_title), None)
+                if candidate:
+                    book = candidate
+                    break
+        else:
+            genre_books = book_data.get(genre, [])
+            book = next((b for b in genre_books if b["title"] == book_title), None)
+    if not book:
+        try:
+            await query.edit_message_text("Книгу не знайдено.")
+        except BadRequest as e:
+            if "Message is not modified" not in str(e):
+                raise
+        return SHOW_BOOKS
+    context.user_data["book"] = book
+    author = book.get("author", "Невідомий автор")
+    title = book.get("title", "Без назви")
+    desc = book.get("desc", "Опис відсутній")
+    book_genre = context.user_data.get("genre", "Жанр не вказано")
+
+    book_info = f"Автор: {author}\nНазва: {title}\nЖанр: {book_genre}\nОпис: {desc}\n\n"
+    await query.edit_message_text(
+        "О, чудовий вибір! Ця книга — справжня перлина 🌼\n\n"
+        + book_info +
+        "Вона знайшла тебе не випадково. Хай читається легко, а думки розпускаються, як чай у теплій чашці.\n\n"
+        "А тепер попрошу трішки про тебе. Залиш свої прізвище та імʼя,  а також номер телефону (щоб ми могли тримати зв’язок, якщо що)\n\n"
+        "Будь ласка, введіть своє ім’я для оформлення замовлення:"
+    )
+    return GET_NAME
+
+
+async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["name"] = update.message.text.strip()
+    button = KeyboardButton("📱 Поділитися номером", request_contact=True)
+    reply_markup = ReplyKeyboardMarkup([[button]], one_time_keyboard=True, resize_keyboard=True)
+    await update.message.reply_text("Надішліть номер телефону:", reply_markup=reply_markup)
+    return GET_CONTACT
+
+
+async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    contact = update.message.contact.phone_number if update.message.contact else update.message.text.strip()
+    context.user_data["contact"] = contact
+    buttons = [
+        [InlineKeyboardButton("7 днів", callback_data="days:7")],
+        [InlineKeyboardButton("14 днів", callback_data="days:14")],
+        [InlineKeyboardButton("🏠 На початок", callback_data="back:start")],
+    ]
+    await update.message.reply_text(
+        "Перш ніж книга вирушить з тобою, розповім кілька простих і чесних правил: бронь діє 7 чи 14 днів з моменту оплати\n\n"
+        "Книга повертається на ту ж поличку, де ти її взяв(-ла) Будь ласка, читай з любовʼю, не загинай сторінки і не залишай записів\n\n"
+        "Оберіть термін оренди:",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+    return BOOK_DETAILS
+
 
 async def days_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -311,7 +567,6 @@ async def days_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data["payment_status"] = "PENDING"
     data["order_datetime"] = datetime.now().isoformat(sep=' ', timespec='seconds')
 
-    # Записуємо замовлення у таблицю з payment_status = PENDING
     save_data = {
         "location": data.get("location", ""),
         "author": author,
