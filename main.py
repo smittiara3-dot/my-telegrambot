@@ -82,7 +82,7 @@ def get_paginated_buttons(items, page, prefix, page_size, add_start_button=False
 def make_book_callback_data(title: str) -> str:
     h = hashlib.sha256(title.encode('utf-8')).hexdigest()[:16]
     return f"book:{h}"
-async def create_monopay_invoice(amount: int, description: str, order_id: str) -> str:
+async def create_monopay_invoice(amount: int, description: str, invoice_id: str) -> str:
     url = "https://api.monobank.ua/api/merchant/invoice/create"
     headers = {
         "X-Token": MONOPAY_TOKEN,
@@ -92,7 +92,7 @@ async def create_monopay_invoice(amount: int, description: str, order_id: str) -
         "amount": amount * 100,
         "currency": 980,
         "description": description,
-        "orderId": order_id,
+        "invoiceid": invoice_id,
         "redirectUrl": f"{WEBHOOK_URL}/success",
         "webHookUrl": f"{WEBHOOK_URL}/monopay_callback",
     }
@@ -749,3 +749,4 @@ if __name__ == "__main__":
         logger.info("Shutting down...")
         loop.run_until_complete(application.stop())
         loop.run_until_complete(application.shutdown())
+
