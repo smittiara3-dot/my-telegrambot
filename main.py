@@ -567,7 +567,12 @@ async def days_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         invoice_url, invoice_id = await create_monopay_invoice(price_total, description, str(uuid.uuid4()))
         data["invoice_id"] = invoice_id  # Зберігаємо invoiceId
-        await save_order_to_sheets(data)  # Оновлюємо у таблиці
+
+        # Оновлюємо запис у таблиці вже з invoice_id
+        saved_after_update = await save_order_to_sheets(data)
+        if not saved_after_update:
+            logger.error("Не вдалося оновити запис з invoice_id у Google Sheets")
+
         buttons = [
             [InlineKeyboardButton("💳 Оплатити MonoPay", url=invoice_url)],
             [InlineKeyboardButton("🏠 На початок", callback_data="back:start")],
