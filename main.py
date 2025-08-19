@@ -30,15 +30,11 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MONOPAY_TOKEN = os.getenv("MONOPAY_TOKEN")
 MONOPAY_WEBHOOK_SECRET = os.getenv("MONOPAY_WEBHOOK_SECRET", None)
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-if WEBHOOK_URL:
-    WEBHOOK_URL = WEBHOOK_URL.rstrip("/")
-else:
-    raise ValueError("WEBHOOK_URL environment variable is not set")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL").rstrip("/")
 PORT = int(os.getenv("PORT", 8443))
-
 GOOGLE_SHEET_ID_LOCATIONS = os.getenv("GOOGLE_SHEET_ID_LOCATIONS")
 GOOGLE_SHEET_ID_ORDERS = os.getenv("GOOGLE_SHEET_ID_ORDERS")
+
 creds_dict = json.loads(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"))
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -62,6 +58,7 @@ gc.session = AuthorizedSession(credentials)
 
 books_per_page = 10
 locations_per_page = 10
+
 locations = []
 genres = []
 authors = []
@@ -91,7 +88,11 @@ def get_paginated_buttons(items, page, prefix, page_size, add_start_button=False
         buttons.append([InlineKeyboardButton("🏠 На початок", callback_data="back:start")])
     return buttons
 
-async def create_monopay_invoice(amount: int, description: str, invoice_id: str) -> str:
+def make_book_callback_data(title: str) -> str:
+    h = hashlib.sha256(title.encode('utf-8')).hexdigest()[:16]
+    return f"book:{h}"
+
+async def create_monopay_invoice(amount: int, description: str, order_id: str) -> tuple[str, str]:
     url = "https://api.monobank.ua/api/merchant/invoice/create"
     headers = {
         "X-Token": MONOPAY_TOKEN,
@@ -101,7 +102,7 @@ async def create_monopay_invoice(amount: int, description: str, invoice_id: str)
         "amount": amount * 100,
         "currency": 980,
         "description": description,
-        "invoiceid": invoice_id,
+        "orderId": order_id,
         "redirectUrl": f"{WEBHOOK_URL}/success",
         "webHookUrl": f"{WEBHOOK_URL}/monopay_callback",
     }
@@ -109,85 +110,54 @@ async def create_monopay_invoice(amount: int, description: str, invoice_id: str)
         async with session.post(url, headers=headers, json=data) as resp:
             resp_json = await resp.json()
             if resp.status == 200 and ("pageUrl" in resp_json or "invoiceUrl" in resp_json):
-                return resp_json.get("pageUrl") or resp_json.get("invoiceUrl")
+                invoice_id = resp_json.get("invoiceId")
+                payment_url = resp_json.get("pageUrl") or resp_json.get("invoiceUrl")
+                return payment_url, invoice_id
             else:
                 logger.error(f"MonoPay invoice creation error: {resp_json}")
                 raise Exception(f"Помилка створення інвойсу MonoPay: {resp_json}")
 
-async def save_order_to_sheets(data: dict, update_existing: bool = False) -> bool:
-    logger.info(f"Спроба запису в Google Sheets. Дані: {data}, update_existing={update_existing}")
+async def save_order_to_sheets(data: dict) -> bool:
     try:
         worksheet = gc.open_by_key(GOOGLE_SHEET_ID_ORDERS).sheet1
-        if update_existing:
-            records = worksheet.get_all_records()
-            row_num = None
-            for idx, row in enumerate(records, start=2):
-                if str(row.get("order_id", "")) == str(data.get("order_id")):
-                    row_num = idx
-                    break
-            if row_num:
-                values = [
-                    data.get("location", ""),
-                    data.get("author", ""),
-                    data.get("title", ""),
-                    data.get("genre", ""),
-                    data.get("days", ""),
-                    data.get("name", ""),
-                    data.get("contact", ""),
-                    data.get("order_datetime", ""),
-                    data.get("order_id", ""),
-                    data.get("chat_id", ""),
-                    data.get("payment_status", ""),
-                ]
-                worksheet.update(f"A{row_num}:K{row_num}", [values])
-                return True
-            else:
-                logger.warning(f"Order ID {data.get('order_id')} not found for update, appending new row")
-                worksheet.append_row([
-                    data.get("location", ""),
-                    data.get("author", ""),
-                    data.get("title", ""),
-                    data.get("genre", ""),
-                    data.get("days", ""),
-                    data.get("name", ""),
-                    data.get("contact", ""),
-                    data.get("order_datetime", ""),
-                    data.get("order_id", ""),
-                    data.get("chat_id", ""),
-                    data.get("payment_status", ""),
-                ])
-                return True
-        else:
-            worksheet.append_row([
-                data.get("location", ""),
-                data.get("author", ""),
-                data.get("title", ""),
+        location_str = data.get("location")
+        if not location_str:
+            book_title = data.get("book", {}).get("title", "")
+            locs = book_to_locations.get(book_title, [])
+            location_str = ", ".join(locs) if locs else ""
+        book = data.get("book", {})
+        author = book.get("author", "")
+        order_datetime = datetime.now().isoformat(sep=' ', timespec='seconds')
+        worksheet.append_row(
+            [
+                location_str,
+                author,
+                book.get("title", ""),
                 data.get("genre", ""),
                 data.get("days", ""),
                 data.get("name", ""),
                 data.get("contact", ""),
-                data.get("order_datetime", ""),
-                data.get("order_id", ""),
+                order_datetime,
+                data.get("invoice_id", ""),
                 data.get("chat_id", ""),
-                data.get("payment_status", ""),
-            ])
-            return True
+            ]
+        )
+        return True
     except Exception as e:
         logger.error(f"Помилка запису в Google Sheets: {e}", exc_info=True)
         return False
 
-async def get_chat_id_for_order(order_id: str) -> int | None:
+async def get_chat_id_for_order(invoice_id: str) -> int | None:
     try:
         worksheet = gc.open_by_key(GOOGLE_SHEET_ID_ORDERS).sheet1
         records = worksheet.get_all_records()
-        logger.info(f"Order_ids зараз у таблиці: {[r.get('order_id') for r in records]}")
         for row in records:
-            if str(row.get("order_id", "")) == str(order_id):
+            if str(row.get("invoice_id", "")) == str(invoice_id):
                 chat_id = row.get("chat_id")
                 if chat_id:
                     return int(chat_id)
     except Exception as e:
-        logger.error(f"Error getting chat_id for order: {e}")
+        logger.error(f"Error getting chat_id for invoice: {e}")
     return None
 
 def load_data_from_google_sheet():
@@ -496,7 +466,6 @@ async def book_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     title = book.get("title", "Без назви")
     desc = book.get("desc", "Опис відсутній")
     book_genre = context.user_data.get("genre", "Жанр не вказано")
-    
     book_info = f"Автор: {author}\nНазва: {title}\nЖанр: {book_genre}\nОпис: {desc}\n\n"
     await query.edit_message_text(
         "О, чудовий вибір! Ця книга — справжня перлина 🌼\n\n"
@@ -545,32 +514,21 @@ async def days_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         locations_list = book_to_locations.get(book_title, [])
         location = ", ".join(locations_list) if locations_list else ""
         data["location"] = location
-    data["order_id"] = str(uuid.uuid4())
+    data["invoice_id"] = None  # Ініціалізація, буде встановлено пізніше
+
     data["chat_id"] = query.message.chat.id
     price_total = book.get(f'price_{days}', rental_price_map.get(days, 70))
     data["book"]["price"] = price_total
-    data["payment_status"] = "PENDING"
-    data["order_datetime"] = datetime.now().isoformat(sep=' ', timespec='seconds')
-    save_data = {
-        "location": data.get("location", ""),
-        "author": author,
-        "title": book.get("title", ""),
-        "genre": genre,
-        "days": data.get("days", ""),
-        "name": data.get("name", ""),
-        "contact": data.get("contact", ""),
-        "order_datetime": data.get("order_datetime", ""),
-        "order_id": data.get("order_id", ""),
-        "chat_id": data.get("chat_id", ""),
-        "payment_status": data.get("payment_status"),
-    }
-    saved = await save_order_to_sheets(save_data)
+    logger.info("Отримане замовлення: %s", pprint.pformat(data))
+    saved = await save_order_to_sheets(data)
     if not saved:
         await query.edit_message_text("Проблема із збереженням замовлення. Спробуйте пізніше.")
         return ConversationHandler.END
     description = f"Оренда книги {data['book']['title']} на {days} днів"
     try:
-        invoice_url = await create_monopay_invoice(price_total, description, data["order_id"])
+        invoice_url, invoice_id = await create_monopay_invoice(price_total, description, str(uuid.uuid4()))
+        data["invoice_id"] = invoice_id  # Зберігаємо invoiceId
+        await save_order_to_sheets(data)  # Оновлюємо у таблиці
         buttons = [
             [InlineKeyboardButton("💳 Оплатити MonoPay", url=invoice_url)],
             [InlineKeyboardButton("🏠 На початок", callback_data="back:start")],
@@ -599,6 +557,9 @@ async def monopay_webhook(request):
     try:
         body = await request.text()
         data = json.loads(body)
+
+        logger.info(f"Full webhook data received from MonoPay:\n{json.dumps(data, indent=2, ensure_ascii=False)}")
+
         signature = request.headers.get("X-Signature-MonoPay")
         if MONOPAY_WEBHOOK_SECRET and signature:
             computed_signature = hmac.new(
@@ -609,35 +570,14 @@ async def monopay_webhook(request):
             if not hmac.compare_digest(computed_signature, signature):
                 logger.warning("Invalid MonoPay webhook signature")
                 return web.Response(text="Invalid signature", status=403)
-        invoiceId = data.get("invoiceId")
+
+        invoice_id = data.get("invoiceId")
         payment_status = data.get("status")
-        logger.info(f"MonoPay webhook received: invoiceId={invoiceId}, status={payment_status}")
-        if payment_status and payment_status.lower() in ("paid", "success", "processed", "ready"):
-            chat_id = await get_chat_id_for_order(invoiceId)
+        logger.info(f"MonoPay webhook received: invoiceId={invoice_id}, status={payment_status}")
+
+        if payment_status == "PAID" or payment_status == "success":
+            chat_id = await get_chat_id_for_order(invoice_id)
             if chat_id:
-                worksheet = gc.open_by_key(GOOGLE_SHEET_ID_ORDERS).sheet1
-                records = worksheet.get_all_records()
-                order_found = False
-                for idx, row in enumerate(records, start=2):
-                    if str(row.get("order_id", "")) == str(invoiceId):
-                        order_found = True
-                        new_data = {
-                            "location": row.get("location", ""),
-                            "author": row.get("author", ""),
-                            "title": row.get("title", ""),
-                            "genre": row.get("genre", ""),
-                            "days": row.get("days", ""),
-                            "name": row.get("name", ""),
-                            "contact": row.get("contact", ""),
-                            "order_datetime": row.get("order_datetime", ""),
-                            "order_id": invoiceId,
-                            "chat_id": chat_id,
-                            "payment_status": "PAID"
-                        }
-                        await save_order_to_sheets(new_data, update_existing=True)
-                        break
-                if not order_found:
-                    logger.warning(f"Order {invoiceId} not found in sheet to update status")
                 text = (
                     "✅ Все готово! Обійми книжку, забери її з полички — і насолоджуйся кожною сторінкою.\n"
                     "Нехай ця історія буде саме тією, яку тобі зараз потрібно.\n"
@@ -655,7 +595,7 @@ async def monopay_webhook(request):
                 except Exception as e:
                     logger.error(f"Не вдалося надіслати повідомлення в Telegram: {e}")
             else:
-                logger.warning(f"Chat ID for order {invoiceId} not found")
+                logger.warning(f"Chat ID for invoice {invoice_id} not found")
         return web.Response(text="OK")
     except Exception as e:
         logger.exception("Error in MonoPay webhook:")
@@ -781,7 +721,6 @@ async def start_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def init_app():
     load_data_from_google_sheet()
     application = Application.builder().token(BOT_TOKEN).build()
-
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
@@ -814,7 +753,7 @@ async def init_app():
                 MessageHandler(filters.CONTACT | filters.TEXT, get_contact)
             ],
             CONFIRMATION: [
-                CallbackQueryHandler(go_back, pattern=r"^back:start$")
+                CallbackQueryHandler(go_back, pattern=r"^back:start$"),
             ],
         },
         fallbacks=[CommandHandler("cancel", lambda update, context: update.message.reply_text("❌ Скасовано."))],
@@ -822,27 +761,21 @@ async def init_app():
     application.add_handler(conv_handler)
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("reload", reload_data))
-
     await application.initialize()
     await application.start()
-
     app = web.Application()
     app.router.add_get("/", lambda request: web.Response(text="OK", status=200))
     app.router.add_post("/telegram_webhook", telegram_webhook_handler)
     app.router.add_post("/monopay_callback", monopay_webhook)
     app.router.add_get("/success", success_page_handler)
-
     app.bot_updater = application
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
-
     await application.bot.set_webhook(f"{WEBHOOK_URL}/telegram_webhook")
-
     logger.info(f"Server started on port {PORT}")
     logger.info(f"Telegram webhook set to {WEBHOOK_URL}/telegram_webhook")
-
     return app, application
 
 if __name__ == "__main__":
