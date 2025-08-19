@@ -24,7 +24,6 @@ from datetime import datetime
 from dotenv import load_dotenv
 
 load_dotenv()
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -36,12 +35,11 @@ if WEBHOOK_URL:
     WEBHOOK_URL = WEBHOOK_URL.rstrip("/")
 else:
     raise ValueError("WEBHOOK_URL environment variable is not set")
-
 PORT = int(os.getenv("PORT", 8443))
+
 GOOGLE_SHEET_ID_LOCATIONS = os.getenv("GOOGLE_SHEET_ID_LOCATIONS")
 GOOGLE_SHEET_ID_ORDERS = os.getenv("GOOGLE_SHEET_ID_ORDERS")
 creds_dict = json.loads(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"))
-
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
@@ -64,7 +62,6 @@ gc.session = AuthorizedSession(credentials)
 
 books_per_page = 10
 locations_per_page = 10
-
 locations = []
 genres = []
 authors = []
@@ -117,33 +114,63 @@ async def create_monopay_invoice(amount: int, description: str, invoice_id: str)
                 logger.error(f"MonoPay invoice creation error: {resp_json}")
                 raise Exception(f"Помилка створення інвойсу MonoPay: {resp_json}")
 
-async def save_order_to_sheets(data: dict) -> bool:
+async def save_order_to_sheets(data: dict, update_existing: bool = False) -> bool:
     try:
         worksheet = gc.open_by_key(GOOGLE_SHEET_ID_ORDERS).sheet1
-        location_str = data.get("location")
-        if not location_str:
-            book_title = data.get("book", {}).get("title", "")
-            locs = book_to_locations.get(book_title, [])
-            location_str = ", ".join(locs) if locs else ""
-        book = data.get("book", {})
-        author = book.get("author", "")
-        order_datetime = datetime.now().isoformat(sep=' ', timespec='seconds')
-        worksheet.append_row(
-            [
-                location_str,
-                author,
-                book.get("title", ""),
+        if update_existing:
+            records = worksheet.get_all_records()
+            row_num = None
+            for idx, row in enumerate(records, start=2):
+                if str(row.get("order_id", "")) == str(data.get("order_id")):
+                    row_num = idx
+                    break
+            if row_num:
+                values = [
+                    data.get("location", ""),
+                    data.get("author", ""),
+                    data.get("title", ""),
+                    data.get("genre", ""),
+                    data.get("days", ""),
+                    data.get("name", ""),
+                    data.get("contact", ""),
+                    data.get("order_datetime", ""),
+                    data.get("order_id", ""),
+                    data.get("chat_id", ""),
+                    data.get("payment_status", ""),
+                ]
+                worksheet.update(f"A{row_num}:K{row_num}", [values])
+                return True
+            else:
+                logger.warning(f"Order ID {data.get('order_id')} not found for update, appending new row")
+                worksheet.append_row([
+                    data.get("location", ""),
+                    data.get("author", ""),
+                    data.get("title", ""),
+                    data.get("genre", ""),
+                    data.get("days", ""),
+                    data.get("name", ""),
+                    data.get("contact", ""),
+                    data.get("order_datetime", ""),
+                    data.get("order_id", ""),
+                    data.get("chat_id", ""),
+                    data.get("payment_status", ""),
+                ])
+                return True
+        else:
+            worksheet.append_row([
+                data.get("location", ""),
+                data.get("author", ""),
+                data.get("title", ""),
                 data.get("genre", ""),
                 data.get("days", ""),
                 data.get("name", ""),
                 data.get("contact", ""),
-                order_datetime,
+                data.get("order_datetime", ""),
                 data.get("order_id", ""),
                 data.get("chat_id", ""),
-                data.get("payment_status", "PAID")
-            ]
-        )
-        return True
+                data.get("payment_status", ""),
+            ])
+            return True
     except Exception as e:
         logger.error(f"Помилка запису в Google Sheets: {e}", exc_info=True)
         return False
@@ -228,11 +255,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Помилка оновлення даних у /start: {e}")
     welcome_text = (
-            "Привіт! Я — Ботик-книголюб 📚\n"
-            "Я доглядаю за Тихою поличкою — місцем, де книги говорять у тиші, а читачі знаходять саме ту історію, яка зараз потрібна\n"
-            "Я допоможу тобі обрати книгу, розповім усе, що треба знати, і проведу до затишного читання 🌿\n"
-            "Спочатку оберімо, на якій поличці ти сьогодні?\n"
-            "Вибери місце, де ти знайшов(-ла) нас — і я покажу доступні книжки ✨\n"
+        "Привіт! Я — Ботик-книголюб 📚\n"
+        "Я доглядаю за Тихою поличкою — місцем, де книги говорять у тиші, а читачі знаходять саме ту історію, яка зараз потрібна\n"
+        "Я допоможу тобі обрати книгу, розповім усе, що треба знати, і проведу до затишного читання 🌿\n"
+        "Спочатку оберімо, на якій поличці ти сьогодні?\n"
+        "Вибери місце, де ти знайшов(-ла) нас — і я покажу доступні книжки ✨\n"
     )
     keyboard = get_paginated_buttons(locations, 0, "location", locations_per_page, add_start_button=True)
     keyboard.append([InlineKeyboardButton("📚 Показати всі книги", callback_data="all_books")])
@@ -520,12 +547,8 @@ async def days_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data["chat_id"] = query.message.chat.id
     price_total = book.get(f'price_{days}', rental_price_map.get(days, 70))
     data["book"]["price"] = price_total
-    data["payment_status"] = "PAID"
-    logger.info("Отримане замовлення: %s", pprint.pformat(data))
-    saved = await save_order_to_sheets(data)
-    if not saved:
-        await query.edit_message_text("Проблема із збереженням замовлення. Спробуйте пізніше.")
-        return ConversationHandler.END
+    data["payment_status"] = "PENDING"  # Змінено статус, ще не оплачено
+
     description = f"Оренда книги {data['book']['title']} на {days} днів"
     try:
         invoice_url = await create_monopay_invoice(price_total, description, data["order_id"])
@@ -551,6 +574,7 @@ async def days_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         buttons = [[InlineKeyboardButton("🏠 На початок", callback_data="back:start")]]
         await query.edit_message_text(f"Помилка при створенні платежу: {e}", reply_markup=InlineKeyboardMarkup(buttons))
         return ConversationHandler.END
+
     return CONFIRMATION
 
 async def monopay_webhook(request):
@@ -570,13 +594,37 @@ async def monopay_webhook(request):
         invoiceId = data.get("invoiceId")
         payment_status = data.get("status")
         logger.info(f"MonoPay webhook received: invoiceId={invoiceId}, status={payment_status}")
-
         if payment_status and payment_status.lower() in ("paid", "success", "processed", "ready"):
             chat_id = await get_chat_id_for_order(invoiceId)
             if chat_id:
-                text = ("✅ Все готово! Обійми книжку, забери її з полички — і насолоджуйся кожною сторінкою.\n"
-                        "Нехай ця історія буде саме тією, яку тобі зараз потрібно.\n"
-                        "З любов’ю до читання,Тиха поличка і я — Ботик-книголюб 🤍")
+                worksheet = gc.open_by_key(GOOGLE_SHEET_ID_ORDERS).sheet1
+                records = worksheet.get_all_records()
+                order_found = False
+                for idx, row in enumerate(records, start=2):
+                    if str(row.get("order_id", "")) == str(invoiceId):
+                        order_found = True
+                        new_data = {
+                            "location": row.get("location", ""),
+                            "author": row.get("author", ""),
+                            "title": row.get("title", ""),
+                            "genre": row.get("genre", ""),
+                            "days": row.get("days", ""),
+                            "name": row.get("name", ""),
+                            "contact": row.get("contact", ""),
+                            "order_datetime": row.get("order_datetime", ""),
+                            "order_id": invoiceId,
+                            "chat_id": chat_id,
+                            "payment_status": "PAID"
+                        }
+                        await save_order_to_sheets(new_data, update_existing=True)
+                        break
+                if not order_found:
+                    logger.warning(f"Order {invoiceId} not found in sheet to update status")
+                text = (
+                    "✅ Все готово! Обійми книжку, забери її з полички — і насолоджуйся кожною сторінкою.\n"
+                    "Нехай ця історія буде саме тією, яку тобі зараз потрібно.\n"
+                    "З любов’ю до читання, Тиха поличка і я — Ботик-книголюб 🤍"
+                )
                 buttons = [
                     [InlineKeyboardButton("🏠 На початок", callback_data="back:start")]
                 ]
@@ -747,7 +795,7 @@ async def init_app():
                 MessageHandler(filters.CONTACT | filters.TEXT, get_contact)
             ],
             CONFIRMATION: [
-                CallbackQueryHandler(go_back, pattern=r"^back:start$"),
+                CallbackQueryHandler(go_back, pattern=r"^back:start$")
             ],
         },
         fallbacks=[CommandHandler("cancel", lambda update, context: update.message.reply_text("❌ Скасовано."))],
