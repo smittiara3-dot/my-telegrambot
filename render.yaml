@@ -7,17 +7,18 @@ services:
     startCommand: "python main.py"
     envVars:
       - key: TOKEN
-        value: "8447751977:AAFXGtRnMuK_SnSMnyTu6aYO2pdmwIhY_ZU"
+        value: "BOT_TOKEN"
         key: GOOGLE_SHEET_ID
         value: "12NgTrVF_d6LE0qDQEyLBz7eBIYy1G-FWE7Q0DykFGbQ"
       - key: ADMIN_CHAT_ID
         value: "1332202691"
       - key: WEBHOOK_URL
-        value: "https://my-telegrambot-d0gp.onrender.com"
+        value: "https://your-render-domain.onrender.com"
       - key: MONOPAY_TOKEN
-        value: "uOsUlxHhwx2koIxLJhLipenZDNyXs9jCJ4ZL7Mhx7hIc"
+        value: "MONOPAY_TOKEN"
       - key: PORT
         value: "8443"
+
 
 
 
