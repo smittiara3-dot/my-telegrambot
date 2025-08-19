@@ -21,6 +21,7 @@ from google.oauth2.service_account import Credentials
 from google.auth.transport.requests import AuthorizedSession
 import pandas as pd
 from datetime import datetime
+from zoneinfo import ZoneInfo  # Імпорт для роботи з часовою зоною Києва
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -35,10 +36,12 @@ PORT = int(os.getenv("PORT", 8443))
 GOOGLE_SHEET_ID_LOCATIONS = os.getenv("GOOGLE_SHEET_ID_LOCATIONS")
 GOOGLE_SHEET_ID_ORDERS = os.getenv("GOOGLE_SHEET_ID_ORDERS")
 creds_dict = json.loads(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"))
+
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
 ]
+
 credentials = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
 gc = gspread.Client(auth=credentials)
 gc.session = AuthorizedSession(credentials)
@@ -69,8 +72,7 @@ author_to_books = {}
 author_to_books_normalized = {}
 rental_price_map = {}
 
-# Temporary in-memory store for orders before payment confirmation.
-# Key: invoice_id (str), Value: order data (dict)
+# Тимчасове сховище замовлень перед підтвердженням оплати
 pending_orders = {}
 
 def normalize_str(s: str) -> str:
@@ -130,7 +132,8 @@ async def save_order_to_sheets(data: dict) -> bool:
             location_str = ", ".join(locs) if locs else ""
         book = data.get("book", {})
         author = book.get("author", "")
-        order_datetime = datetime.now().isoformat(sep=' ', timespec='seconds')
+        kyiv_tz = ZoneInfo("Europe/Kyiv")  # Часова зона Києва
+        order_datetime = datetime.now(kyiv_tz).isoformat(sep=' ', timespec='seconds')
         worksheet.append_row(
             [
                 location_str,
@@ -166,12 +169,15 @@ async def get_chat_id_for_order(invoice_id: str) -> int | None:
 def load_data_from_google_sheet():
     global locations, genres, authors, book_data, rental_price_map
     global book_to_locations, location_to_books, author_to_books, author_normalized_map, author_to_books_normalized
+
     sh = gc.open_by_key(GOOGLE_SHEET_ID_LOCATIONS)
     worksheet = sh.sheet1
     records = worksheet.get_all_records()
     df = pd.DataFrame(records)
+
     locations = sorted(df['location'].dropna().unique().tolist())
     genres = sorted(df['genre'].dropna().unique().tolist())
+
     authors.clear()
     author_normalized_map.clear()
     author_to_books.clear()
@@ -179,6 +185,7 @@ def load_data_from_google_sheet():
     book_data.clear()
     book_to_locations.clear()
     location_to_books.clear()
+
     for genre in genres:
         books = []
         df_genre = df[df['genre'] == genre]
@@ -193,16 +200,20 @@ def load_data_from_google_sheet():
                 "price_14": row.get('price_14', 140),
             }
             books.append(book)
+
             if book["title"] not in book_to_locations:
                 book_to_locations[book["title"]] = []
             if row['location'] not in book_to_locations[book["title"]]:
                 book_to_locations[book["title"]].append(row['location'])
+
             loc = row['location']
             if loc not in location_to_books:
                 location_to_books[loc] = []
             if book["title"] not in location_to_books[loc]:
                 location_to_books[loc].append(book["title"])
+
         book_data[genre] = books
+
     if not df.empty:
         row0 = df.iloc[0]
         rental_price_map = {
@@ -211,6 +222,7 @@ def load_data_from_google_sheet():
         }
     else:
         rental_price_map = {7: 70, 14: 140}
+
     logger.info(f"Дані завантажено: {len(locations)} локацій, {len(genres)} жанрів.")
 
 async def reload_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -230,11 +242,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Помилка оновлення даних у /start: {e}")
     welcome_text = (
-            "Привіт! Я — Ботик-книголюб 📚\n"
-            "Я доглядаю за Тихою поличкою — місцем, де книги говорять у тиші, а читачі знаходять саме ту історію, яка зараз потрібна\n"
-            "Я допоможу тобі обрати книгу, розповім усе, що треба знати, і проведу до затишного читання 🌿\n"
-            "Спочатку оберімо, на якій поличці ти сьогодні?\n"
-            "Вибери місце, де ти знайшов(-ла) нас — і я покажу доступні книжки ✨\n"
+        "Привіт! Я — Ботик-книголюб 📚\n"
+        "Я доглядаю за Тихою поличкою — місцем, де книги говорять у тиші, а читачі знаходять саме ту історію, яка зараз потрібна\n"
+        "Я допоможу тобі обрати книгу, розповім усе, що треба знати, і проведу до затишного читання 🌿\n"
+        "Спочатку оберімо, на якій поличці ти сьогодні?\n"
+        "Вибери місце, де ти знайшов(-ла) нас — і я покажу доступні книжки ✨\n"
     )
     keyboard = get_paginated_buttons(locations, 0, "location", locations_per_page, add_start_button=True)
     keyboard.append([InlineKeyboardButton("📚 Показати всі книги", callback_data="all_books")])
@@ -256,6 +268,7 @@ async def choose_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     current_page = context.user_data.get("location_page", 0)
     max_page = (len(locations) - 1) // locations_per_page
+
     if data == "location_next":
         next_page = min(current_page + 1, max_page)
         context.user_data["location_page"] = next_page
@@ -270,6 +283,7 @@ async def choose_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if "Message is not modified" not in str(e):
                 raise
         return CHOOSE_LOCATION
+
     if data == "location_prev":
         prev_page = max(current_page - 1, 0)
         context.user_data["location_page"] = prev_page
@@ -284,18 +298,22 @@ async def choose_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if "Message is not modified" not in str(e):
                 raise
         return CHOOSE_LOCATION
+
     loc_selected = data.split(":", 1)[1]
     context.user_data["location"] = loc_selected
     loc_books_titles = location_to_books.get(loc_selected, [])
+
     if not loc_books_titles:
         await query.edit_message_text(f"На локації \"{loc_selected}\" немає доступних книг.")
         return CHOOSE_LOCATION
+
     genres_in_location_set = set()
     for genre, books in book_data.items():
         titles = [b['title'] for b in books]
         for t in loc_books_titles:
             if t in titles:
                 genres_in_location_set.add(genre)
+
     genres_in_location = sorted(genres_in_location_set)
     context.user_data["location_genres"] = genres_in_location
     context.user_data["location_books"] = loc_books_titles
@@ -328,11 +346,13 @@ async def choose_genre(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     genre = query.data.split(":", 1)[1]
     loc = context.user_data.get("location")
+
     if genre == "all_location":
         loc_book_titles = context.user_data.get("location_books", [])
         if not loc_book_titles:
             await query.edit_message_text(f"На локації \"{loc}\" немає доступних книг.")
             return ConversationHandler.END
+        
         books_list = []
         added_titles = set()
         for genre_books in book_data.values():
@@ -340,18 +360,22 @@ async def choose_genre(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if b["title"] in loc_book_titles and b["title"] not in added_titles:
                     books_list.append(b)
                     added_titles.add(b["title"])
+        
         if not books_list:
             await query.edit_message_text(f"На локації \"{loc}\" немає доступних книг.")
             return ConversationHandler.END
+        
         context.user_data["genre"] = "all_location"
         context.user_data["books"] = books_list
         context.user_data["book_page"] = 0
         await show_books(update, context)
         return SHOW_BOOKS
+
     if loc:
         loc_books_titles = location_to_books.get(loc, [])
         genre_books = book_data.get(genre, [])
         filtered_books = [b for b in genre_books if b["title"] in loc_books_titles]
+
         if not filtered_books:
             try:
                 await query.edit_message_text("Немає книг у цьому жанрі на цій локації.")
@@ -359,11 +383,13 @@ async def choose_genre(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if "Message is not modified" not in str(e):
                     raise
             return ConversationHandler.END
+
         context.user_data["genre"] = genre
         context.user_data["books"] = filtered_books
         context.user_data["book_page"] = 0
         await show_books(update, context)
         return SHOW_BOOKS
+
     else:
         genre_books = book_data.get(genre, [])
         if not genre_books:
@@ -386,6 +412,7 @@ async def show_books(update: Update, context: ContextTypes.DEFAULT_TYPE):
     page = context.user_data.get("book_page", 0)
     start, end = page * books_per_page, (page + 1) * books_per_page
     page_books = books[start:end]
+
     buttons = []
     book_hash_map = {}
     for book in page_books:
@@ -398,6 +425,7 @@ async def show_books(update: Update, context: ContextTypes.DEFAULT_TYPE):
             title_text += f" ({author})"
         buttons.append([InlineKeyboardButton(title_text, callback_data=f"book:{h}")])
     context.user_data["book_hash_map"] = book_hash_map
+
     nav = []
     if start > 0:
         nav.append(InlineKeyboardButton("⬅️", callback_data="book_prev"))
@@ -405,6 +433,7 @@ async def show_books(update: Update, context: ContextTypes.DEFAULT_TYPE):
         nav.append(InlineKeyboardButton("➡️", callback_data="book_next"))
     if nav:
         buttons.append(nav)
+
     buttons.append(
         [
             InlineKeyboardButton("🔙 До жанрів", callback_data="back:genres"),
@@ -425,10 +454,12 @@ async def book_navigation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current_page = context.user_data.get("book_page", 0)
     books = context.user_data.get("books", [])
     max_page = (len(books) - 1) // books_per_page if books else 0
+
     if query.data == "book_next":
         context.user_data["book_page"] = min(current_page + 1, max_page)
     elif query.data == "book_prev":
         context.user_data["book_page"] = max(current_page - 1, 0)
+
     return await show_books(update, context)
 
 async def book_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -437,6 +468,7 @@ async def book_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     book_hash = query.data.split(":", 1)[1]
     book_hash_map = context.user_data.get("book_hash_map", {})
     book_title = book_hash_map.get(book_hash)
+
     if not book_title:
         try:
             await query.edit_message_text("Книгу не знайдено (неправильний код).")
@@ -444,6 +476,7 @@ async def book_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if "Message is not modified" not in str(e):
                 raise
         return SHOW_BOOKS
+
     genre = context.user_data.get("genre", "")
     current_books = context.user_data.get("books", [])
     book = next((b for b in current_books if b["title"] == book_title), None)
@@ -457,6 +490,7 @@ async def book_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             genre_books = book_data.get(genre, [])
             book = next((b for b in genre_books if b["title"] == book_title), None)
+
     if not book:
         try:
             await query.edit_message_text("Книгу не знайдено.")
@@ -464,6 +498,7 @@ async def book_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if "Message is not modified" not in str(e):
                 raise
         return SHOW_BOOKS
+
     context.user_data["book"] = book
     author = book.get("author", "Невідомий автор")
     title = book.get("title", "Без назви")
@@ -512,27 +547,27 @@ async def days_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     book = data.get("book", {})
     author = book.get("author", "")
     genre = data.get("genre")
+
     if not location:
         book_title = book.get("title", "")
         locations_list = book_to_locations.get(book_title, [])
         location = ", ".join(locations_list) if locations_list else ""
         data["location"] = location
 
-    # generate unique order id for this invoice
+    # Генеруємо унікальний order id
     invoice_uuid = str(uuid.uuid4())
     description = f"Оренда книги {data['book']['title']} на {days} днів"
     price_total = book.get(f'price_{days}', rental_price_map.get(days, 70))
     data["book"]["price"] = price_total
-    data["invoice_id"] = None  # placeholder, will be set after creation
+    data["invoice_id"] = None  # placeholder, буде встановлено після створення
     data["chat_id"] = query.message.chat.id
 
-    # Create invoice on MonoPay
+    # Створення інвойсу в MonoPay
     try:
         invoice_url, invoice_id = await create_monopay_invoice(price_total, description, invoice_uuid)
         data["invoice_id"] = invoice_id
-        # Save to in-memory pending orders storage (not yet to Google Sheets)
         pending_orders[invoice_id] = data.copy()
-        # Show payment button with link to MonoPay
+
         buttons = [
             [InlineKeyboardButton("💳 Оплатити MonoPay", url=invoice_url)],
             [InlineKeyboardButton("🏠 На початок", callback_data="back:start")],
@@ -564,6 +599,7 @@ async def monopay_webhook(request):
         data = json.loads(body)
         logger.info(f"Full webhook data received from MonoPay:\n{json.dumps(data, indent=2, ensure_ascii=False)}")
         signature = request.headers.get("X-Signature-MonoPay")
+
         if MONOPAY_WEBHOOK_SECRET and signature:
             computed_signature = hmac.new(
                 MONOPAY_WEBHOOK_SECRET.encode(),
@@ -573,18 +609,18 @@ async def monopay_webhook(request):
             if not hmac.compare_digest(computed_signature, signature):
                 logger.warning("Invalid MonoPay webhook signature")
                 return web.Response(text="Invalid signature", status=403)
+
         invoice_id = data.get("invoiceId")
         payment_status = data.get("status")
         logger.info(f"MonoPay webhook received: invoiceId={invoice_id}, status={payment_status}")
 
         if payment_status in {"PAID", "success"}:
-            # Retrieve pending order data by invoice_id
             order_data = pending_orders.pop(invoice_id, None)
             if order_data:
-                # Save order to Google Sheets now after confirmed payment
                 saved = await save_order_to_sheets(order_data)
                 if not saved:
                     logger.error(f"Failed to save order to sheets for invoice {invoice_id}")
+
                 chat_id = order_data.get("chat_id")
                 if chat_id:
                     text = (
@@ -666,13 +702,16 @@ async def success_page_handler(request):
 async def go_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data
+
     if data == "back:genres":
         if context.user_data.get("location"):
             return await show_genres_for_location(update, context)
         else:
             return await start(update, context)
+
     if data == "back:books":
         return await show_books(update, context)
+
     if data == "back:locations":
         welcome_text = (
             "Привіт! Я — Ботик-книголюб 📚\n"
@@ -689,6 +728,7 @@ async def go_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if "Message is not modified" not in str(e):
                 raise
         return CHOOSE_LOCATION
+
     if data == "back:start":
         context.user_data.clear()
         try:
@@ -771,7 +811,6 @@ async def init_app():
         },
         fallbacks=[CommandHandler("cancel", lambda update, context: update.message.reply_text("❌ Скасовано."))],
     )
-
     application.add_handler(conv_handler)
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("reload", reload_data))
@@ -784,8 +823,8 @@ async def init_app():
     app.router.add_post("/telegram_webhook", telegram_webhook_handler)
     app.router.add_post("/monopay_callback", monopay_webhook)
     app.router.add_get("/success", success_page_handler)
-
     app.bot_updater = application
+
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
