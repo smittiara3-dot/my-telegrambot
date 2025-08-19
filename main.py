@@ -94,10 +94,6 @@ def get_paginated_buttons(items, page, prefix, page_size, add_start_button=False
         buttons.append([InlineKeyboardButton("🏠 На початок", callback_data="back:start")])
     return buttons
 
-def make_book_callback_data(title: str) -> str:
-    h = hashlib.sha256(title.encode('utf-8')).hexdigest()[:16]
-    return f"book:{h}"
-
 async def create_monopay_invoice(amount: int, description: str, invoice_id: str) -> str:
     url = "https://api.monobank.ua/api/merchant/invoice/create"
     headers = {
@@ -471,6 +467,7 @@ async def book_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     title = book.get("title", "Без назви")
     desc = book.get("desc", "Опис відсутній")
     book_genre = context.user_data.get("genre", "Жанр не вказано")
+    
     book_info = f"Автор: {author}\nНазва: {title}\nЖанр: {book_genre}\nОпис: {desc}\n\n"
     await query.edit_message_text(
         "О, чудовий вибір! Ця книга — справжня перлина 🌼\n\n"
@@ -523,7 +520,7 @@ async def days_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data["chat_id"] = query.message.chat.id
     price_total = book.get(f'price_{days}', rental_price_map.get(days, 70))
     data["book"]["price"] = price_total
-    data["payment_status"] = "PAID"  # Додано, щоб зберегти статус платежу
+    data["payment_status"] = "PAID"
     logger.info("Отримане замовлення: %s", pprint.pformat(data))
     saved = await save_order_to_sheets(data)
     if not saved:
@@ -573,10 +570,13 @@ async def monopay_webhook(request):
         invoiceId = data.get("invoiceId")
         payment_status = data.get("status")
         logger.info(f"MonoPay webhook received: invoiceId={invoiceId}, status={payment_status}")
-        if payment_status == "PAID":
+
+        if payment_status and payment_status.lower() in ("paid", "success", "processed", "ready"):
             chat_id = await get_chat_id_for_order(invoiceId)
             if chat_id:
-                text = "✅ Все готово! Обійми книжку, забери її з полички — і насолоджуйся кожною сторінкою.\nНехай ця історія буде саме тією, яку тобі зараз потрібно.\nЗ любов’ю до читання,Тиха поличка і я — Ботик-книголюб 🤍"
+                text = ("✅ Все готово! Обійми книжку, забери її з полички — і насолоджуйся кожною сторінкою.\n"
+                        "Нехай ця історія буде саме тією, яку тобі зараз потрібно.\n"
+                        "З любов’ю до читання,Тиха поличка і я — Ботик-книголюб 🤍")
                 buttons = [
                     [InlineKeyboardButton("🏠 На початок", callback_data="back:start")]
                 ]
